@@ -922,7 +922,7 @@ function getOccurrencesForDate(dateStr) {
   SCHOOL_HOLIDAYS.forEach((f) => {
     if (dateStr >= f.start && dateStr <= f.end) {
       results.push({
-        apptId: null, occurrenceStart: f.start, occurrenceEnd: f.end, title: `${f.title} (${f.state})`,
+        apptId: null, occurrenceStart: f.start, occurrenceEnd: f.end, title: `${f.state} – ${f.title}`,
         allDay: true, time: null, durationMinutes: null, userNames: [], generalColor: null,
         isRecurring: false, isSpanning: f.start !== f.end, isFerien: true
       });

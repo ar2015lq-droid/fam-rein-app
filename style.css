@@ -40,6 +40,7 @@
   --accent-red: #D2645C;
 
   --input-bg: #1B2628;
+  --cal-cell-bg: #3A4F52;
 }
 
 /* ---------- Light theme ---------- */
@@ -62,6 +63,7 @@
   --accent-red: #C34438;
 
   --input-bg: #F1F3F1;
+  --cal-cell-bg: #FFFFFF;
 }
 
 * { box-sizing: border-box; }
@@ -270,7 +272,7 @@ a { color: inherit; }
   gap: 2px;
 }
 .month-cal-cell {
-  background: var(--surface-alt);
+  background: var(--cal-cell-bg);
   border-radius: 6px;
   min-height: 82px;
   padding: 3px 2px;
