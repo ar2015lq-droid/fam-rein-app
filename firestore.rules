@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Diese App hat KEIN echtes Passwort-Login (wie gewünscht).
+    // Das heißt: jeder mit dem Link kann grundsätzlich lesen und schreiben.
+    // Diese Regeln verhindern nur grobe Fehlbedienung (falsche Datentypen etc.),
+    // sind aber KEIN Schutz vor jemandem, der technisch versiert genug ist,
+    // die Datenbank direkt anzusprechen. Für eine Familien-App ist das in
+    // der Regel ein akzeptabler Kompromiss gegen den Aufwand für echte Logins.
+
+    match /{document=**} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

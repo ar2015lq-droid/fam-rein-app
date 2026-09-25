@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Unsere Familien-App</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ LOGIN ============ -->
+  <div id="login-screen">
+    <div class="login-card">
+      <div class="display">👋 Willkommen!</div>
+      <p>Wie heißt du? Gib deinen Namen ein, um loszulegen.</p>
+      <input id="login-name-input" type="text" placeholder="Dein Name" autocomplete="off">
+      <div class="login-error" id="login-error"></div>
+      <button class="btn btn-primary" id="login-submit-btn">Loslegen</button>
+    </div>
+  </div>
+
+  <!-- ============ APP SHELL (hidden until logged in) ============ -->
+  <div id="app-shell" style="display:none;">
+
+    <!-- ---------- Startseite ---------- -->
+    <section class="screen" id="screen-home" data-screen="home">
+      <div class="greeting" id="home-greeting">Hallo!</div>
+      <div class="greeting-sub" id="home-date"></div>
+
+      <div class="card checklist-card" id="home-checklist-card">
+        <span class="label">Heutiger 50-Cent-Bonus</span>
+        <div id="home-checklist-content"></div>
+      </div>
+
+      <div id="home-orderable">
+        <div class="card balance-card" id="home-card-konto" data-order-key="konto">
+          <div>
+            <div class="label">Dein Kontostand</div>
+            <div class="balance-value" id="home-balance">0,00 €</div>
+          </div>
+          <div style="font-size:2rem;">💰</div>
+        </div>
+
+        <div class="card meal-card" id="home-card-essen" data-order-key="essen" style="display:none;">
+          <div class="label">🍽️ Heute gibt's</div>
+          <div class="meal-text" id="home-meal-text"></div>
+        </div>
+
+        <div class="card important-card" id="home-card-wichtig" data-order-key="wichtig" style="display:none;">
+          <div class="label">WICHTIG</div>
+          <div id="home-important-text"></div>
+        </div>
+
+        <div class="card sick-card" id="home-card-krankHeute" data-order-key="krankHeute" style="display:none;">
+          <div class="label">🤒 Krank heute</div>
+          <div id="home-krank-heute-content"></div>
+        </div>
+
+        <div class="card stats-card" id="home-card-krankStatistik" data-order-key="krankStatistik" style="display:none;">
+          <div class="label">📊 Krankheitstage insgesamt</div>
+          <div id="home-krank-stats-content" class="barchart-container"></div>
+        </div>
+
+        <div class="card termine-card" id="home-card-termine" data-order-key="termine" style="display:none;">
+          <div class="label">📅 Termine heute</div>
+          <div id="home-termine-content"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- Listen: Aufgaben / Einkaufen / Gerichte ---------- -->
+    <section class="screen" id="screen-tasks" data-screen="tasks">
+      <div class="screen-header"><h1 id="tasks-screen-title">📋 Listen</h1></div>
+
+      <div class="tabs tab-group" id="tasks-tab-group">
+        <button class="tab-btn active" data-tab="tasks-panel-aufgaben">✅ Aufgaben</button>
+        <button class="tab-btn" data-tab="tasks-panel-einkaufen" data-track-visit="shopping">🛒 Einkaufen</button>
+        <button class="tab-btn" data-tab="tasks-panel-gerichte">🍽️ Gerichte</button>
+      </div>
+
+      <div class="tab-panel active" id="tasks-panel-aufgaben">
+        <div id="tasks-list"></div>
+        <div class="add-bar" style="margin-bottom:6px;">
+          <input type="text" id="task-input" placeholder="Neue Aufgabe...">
+        </div>
+        <div class="add-bar">
+          <select id="task-assignee-select"></select>
+          <input type="date" id="task-due-input" title="Fälligkeitsdatum (optional)">
+          <button class="btn btn-primary btn-small" id="task-add-btn">+</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tasks-panel-einkaufen">
+        <div class="list-toolbar">
+          <button class="btn-icon" id="shopping-delete-checked-btn" title="Erledigte löschen">🗑️</button>
+        </div>
+        <div id="shopping-list"></div>
+        <div class="add-bar">
+          <input type="text" id="shopping-input" placeholder="Was wird gebraucht?">
+          <button class="btn btn-primary btn-small" id="shopping-add-btn">+</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tasks-panel-gerichte">
+        <div class="section-note">Eure Sammlung an Standard-Gerichten – praktisch, wenn ihr mal Inspiration fürs Kochen braucht.</div>
+        <div id="dishes-list"></div>
+        <div class="add-bar">
+          <input type="text" id="dish-input" placeholder="Neues Gericht...">
+          <button class="btn btn-primary btn-small" id="dish-add-btn">+</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- Aktuell: Chat / Kalender ---------- -->
+    <section class="screen" id="screen-aktuell" data-screen="aktuell">
+      <div class="screen-header"><h1>🔔 Aktuell</h1></div>
+
+      <div class="tabs tab-group" id="aktuell-tab-group">
+        <button class="tab-btn active" data-tab="aktuell-panel-chat">💬 Chat</button>
+        <button class="tab-btn" data-tab="aktuell-panel-kalender" data-track-visit="kalender">📅 Kalender</button>
+      </div>
+
+      <div class="tab-panel active" id="aktuell-panel-chat">
+        <div id="chat-scroll"></div>
+        <div class="chat-input-bar">
+          <input type="text" id="chat-input" placeholder="Nachricht schreiben...">
+          <button class="chat-send-btn" id="chat-send-btn">➤</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="aktuell-panel-kalender">
+        <div class="cal-header" style="margin-bottom:14px;">
+          <button class="cal-nav-btn" id="cal-prev-btn">‹</button>
+          <span class="cal-title" id="cal-month-title" style="font-size:1.05rem;">Monat Jahr</span>
+          <button class="cal-nav-btn" id="cal-next-btn">›</button>
+        </div>
+        <div class="month-cal-wrap">
+          <div class="month-cal-weekdays">
+            <div>Mo</div><div>Di</div><div>Mi</div><div>Do</div><div>Fr</div><div>Sa</div><div>So</div>
+          </div>
+          <div class="month-cal-grid" id="month-cal-grid"></div>
+        </div>
+        <button class="btn btn-primary" id="add-appointment-btn" onclick="window.handleAddAppointmentClick && window.handleAddAppointmentClick()" style="margin-top:16px;">+ Termin hinzufügen</button>
+      </div>
+    </section>
+
+    <!-- ---------- Konto ---------- -->
+    <section class="screen" id="screen-konto" data-screen="konto">
+      <div class="screen-header"><h1>🏦 Konto</h1></div>
+      <div id="konto-list"></div>
+    </section>
+
+    <!-- ---------- Ideen ---------- -->
+    <section class="screen" id="screen-ideen" data-screen="ideen">
+      <div class="screen-header"><h1>💡 Ideen</h1></div>
+      <div class="section-note">Eine Bewertung (Daumen) bringt 10 Cent, eine von Alex angenommene Idee bringt 1 Euro.</div>
+      <div id="ideen-list"></div>
+      <div class="add-bar">
+        <input type="text" id="idea-input" placeholder="Deine Idee...">
+        <button class="btn btn-primary btn-small" id="idea-add-btn">+</button>
+      </div>
+    </section>
+
+    <!-- ---------- Einstellungen ---------- -->
+    <section class="screen" id="screen-settings" data-screen="settings">
+      <div class="screen-header"><h1>⚙️ Einstellungen</h1></div>
+      <div class="setting-row">
+        <div>
+          <div style="font-weight:600;">Dunkelmodus</div>
+          <div style="font-size:0.8rem;color:var(--text-muted);">Für dieses Gerät und deinen Namen</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="darkmode-toggle">
+          <span class="switch-track"></span>
+        </label>
+      </div>
+      <button class="btn btn-ghost" id="logout-btn" style="margin-top:20px;">Anderen Namen verwenden</button>
+
+      <button class="btn btn-secondary" id="settings-admin-link" style="margin-top:12px;display:none;">🛠️ Admin-Bereich öffnen</button>
+    </section>
+
+    <!-- ---------- Admin (inkl. Wichtig als Unterreiter, nur Alex) ---------- -->
+    <section class="screen" id="screen-admin" data-screen="admin">
+      <div class="screen-header">
+        <h1>🛠️ Admin</h1>
+        <button class="btn-icon" id="admin-back-btn" title="Zurück">←</button>
+      </div>
+
+      <div class="tabs tab-group" id="admin-tab-group">
+        <button class="tab-btn" data-tab="admin-backup">Backup</button>
+        <button class="tab-btn active" data-tab="admin-users">Nutzer</button>
+        <button class="tab-btn" data-tab="admin-order">Reihenfolge</button>
+        <button class="tab-btn" data-tab="admin-sick">Krank</button>
+        <button class="tab-btn" data-tab="admin-wichtig">Wichtig</button>
+      </div>
+
+      <div class="tab-panel" id="admin-backup">
+        <div class="section-note">
+          Lädt eine Kopie aller Daten (Nutzer, Aufgaben, Einkaufsliste, Chat, Ideen, Konten, Einstellungen) als Datei auf dein Gerät herunter. Gut, um regelmäßig eine Sicherung zu haben – z.B. bevor du im Admin-Bereich größere Änderungen vornimmst.
+        </div>
+        <button class="btn btn-primary" id="admin-backup-btn">📥 Backup jetzt herunterladen</button>
+        <div id="admin-backup-status" style="margin-top:10px;font-size:0.85rem;color:var(--text-muted);"></div>
+      </div>
+
+      <div class="tab-panel active" id="admin-users">
+        <div id="admin-user-list"></div>
+        <div class="add-bar">
+          <input type="text" id="admin-new-user-input" placeholder="Neuer Nutzername...">
+          <button class="btn btn-primary btn-small" id="admin-add-user-btn">+</button>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="admin-order">
+        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (Konto, Essen, Wichtig, Krank heute, Krank-Statistik) auf der Startseite erscheinen.</div>
+        <ul class="order-list" id="admin-order-list"></ul>
+      </div>
+
+      <div class="tab-panel" id="admin-sick">
+        <div class="setting-row">
+          <div>
+            <div style="font-weight:600;">Krank-Anzeige auf Startseite</div>
+            <div style="font-size:0.8rem;color:var(--text-muted);">Zeigt, wer heute krank ist</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="admin-sick-today-toggle">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div style="font-weight:600;">Krank-Statistik auf Startseite</div>
+            <div style="font-size:0.8rem;color:var(--text-muted);">Säulendiagramm der Krankheitstage insgesamt</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="admin-sick-stats-toggle">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+        <div class="section-note">Klicke auf einen Tag im Kalender, um ihn als krank zu markieren oder wieder zu entfernen.</div>
+        <div id="admin-sick-calendars"></div>
+      </div>
+
+      <div class="tab-panel" id="admin-wichtig">
+        <h3 style="margin-bottom:10px;">Essensplan</h3>
+        <div class="meal-form">
+          <input type="date" id="meal-date-input">
+          <input type="text" id="meal-text-input" placeholder="Was gibt's?">
+          <button class="btn btn-primary btn-small" id="meal-save-btn">OK</button>
+        </div>
+        <div id="meal-list" style="margin-bottom:24px;"></div>
+
+        <h3 style="margin-bottom:10px;">Wichtiger Hinweis (Startseite)</h3>
+        <textarea class="important-input" id="important-text-input" placeholder="z.B. Am Samstag ist Familienausflug..."></textarea>
+        <button class="btn btn-primary" id="important-save-btn" style="margin-top:10px;">Speichern</button>
+      </div>
+    </section>
+
+    <!-- ---------- Bottom Nav ---------- -->
+    <nav id="bottom-nav">
+      <button class="nav-btn" data-target="home"><span class="nav-icon">🏠</span>Start</button>
+      <button class="nav-btn" data-target="tasks"><span class="nav-icon">📋</span>Listen<span class="nav-badge" id="nav-badge-tasks"></span></button>
+      <button class="nav-btn" data-target="aktuell"><span class="nav-icon">🔔</span>Aktuell<span class="nav-badge" id="nav-badge-chat"></span></button>
+      <button class="nav-btn" data-target="konto"><span class="nav-icon">🏦</span>Konto</button>
+      <button class="nav-btn" data-target="ideen"><span class="nav-icon">💡</span>Ideen<span class="nav-badge" id="nav-badge-ideen"></span></button>
+      <button class="nav-btn" data-target="settings"><span class="nav-icon">⚙️</span>Mehr</button>
+    </nav>
+
+  </div>
+
+  <!-- Modal container -->
+  <div id="modal-root"></div>
+  <!-- Toast container -->
+  <div id="toast-root"></div>
+
+</div>
+
+<!-- Firebase (compat build – simplest for static hosting, no bundler needed) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script src="firebase-config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
