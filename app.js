@@ -354,7 +354,8 @@ async function maybeAwardBonus() {
   const allMenus = DAILY_MENUS.every((m) => data.menus && data.menus[m]);
   if (allMenus && data.chatSent) {
     await dailyDocRef().set({ bonusGiven: true }, { merge: true });
-    await addTransaction(currentUser.name, 0.5, 'Tages-Bonus', true);
+    const todayLabel = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    await addTransaction(currentUser.name, 0.5, `Tages-Bonus (${todayLabel})`, true);
     toast('🎉 50 Cent Tages-Bonus erhalten!');
   }
 }
