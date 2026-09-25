@@ -149,27 +149,34 @@ async function handleLoginSubmit() {
   const existing = usersMap[name.toLowerCase()];
   const email = name.toLowerCase() + AUTH_EMAIL_DOMAIN;
 
-  if (!existing) {
-    // Bootstrap: allow "Alex" to self-create (incl. Auth-account) on first ever run
-    if (name.toLowerCase() === ADMIN_NAME.toLowerCase()) {
-      if (password.length < 6) { errEl.textContent = 'Für den Erst-Login bitte ein Passwort mit mind. 6 Zeichen vergeben.'; return; }
-      try {
-        await auth.createUserWithEmailAndPassword(email, password);
-        const data = defaultUserColors(0);
-        await db.collection('users').doc(ADMIN_NAME).set({ name: ADMIN_NAME, ...data, createdAt: FieldValue.serverTimestamp() });
-      } catch (err) {
-        errEl.textContent = 'Fehler: ' + err.message;
-      }
-      return;
-    }
+  if (!existing && name.toLowerCase() !== ADMIN_NAME.toLowerCase()) {
     errEl.textContent = 'Dieser Name ist nicht bekannt. Bitte wende dich an Alex.';
     return;
   }
 
+  // Try a normal sign-in first (covers everyone who already has a password set).
   try {
     await auth.signInWithEmailAndPassword(email, password);
-  } catch (err) {
-    errEl.textContent = 'Falscher Name oder falsches Passwort.';
+    return; // success
+  } catch (signInErr) {
+    // fall through: maybe this name (existing OR the very first "Alex") has no
+    // Auth account yet — createUserWithEmailAndPassword below will tell us
+    // authoritatively whether that's true or whether it's just a wrong password.
+  }
+
+  if (password.length < 6) { errEl.textContent = 'Bitte ein Passwort mit mind. 6 Zeichen vergeben (Ersteinrichtung).'; return; }
+  try {
+    await auth.createUserWithEmailAndPassword(email, password);
+    if (!existing) {
+      const data = defaultUserColors(0);
+      await db.collection('users').doc(ADMIN_NAME).set({ name: ADMIN_NAME, ...data, createdAt: FieldValue.serverTimestamp() });
+    }
+  } catch (createErr) {
+    if (createErr.code === 'auth/email-already-in-use') {
+      errEl.textContent = 'Falscher Name oder falsches Passwort.';
+    } else {
+      errEl.textContent = 'Fehler: ' + createErr.message;
+    }
   }
 }
 
