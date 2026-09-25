@@ -808,6 +808,14 @@ function getOccurrenceStartForDate(appt, dateObj) {
     return formatDateStr(dateObj);
   }
 
+  if (freq === 'yearly') {
+    if (dateObj < anchorObj) return null;
+    if (dateObj.getDate() !== anchorObj.getDate() || dateObj.getMonth() !== anchorObj.getMonth()) return null;
+    const yearsDiff = dateObj.getFullYear() - anchorObj.getFullYear();
+    if (yearsDiff < 0 || yearsDiff % interval !== 0) return null;
+    return formatDateStr(dateObj);
+  }
+
   const cycleDays = interval * (freq === 'weekly' ? 7 : 1);
   const diffDays = Math.round((dateObj - anchorObj) / 86400000);
   if (diffDays < 0) return null;
@@ -1103,6 +1111,7 @@ function openAppointmentModal(existingAppt, dateStr) {
               <option value="daily" ${currentFreq === 'daily' ? 'selected' : ''}>Tag(e)</option>
               <option value="weekly" ${currentFreq === 'weekly' ? 'selected' : ''}>Woche(n)</option>
               <option value="monthly" ${currentFreq === 'monthly' ? 'selected' : ''}>Monat(e)</option>
+              <option value="yearly" ${currentFreq === 'yearly' ? 'selected' : ''}>Jahr(e)</option>
             </select>
             <input type="number" id="appt-recurrence-interval-input" min="1" value="${currentInterval}" style="max-width:80px;" title="alle wie viele Einheiten">
           </div>
