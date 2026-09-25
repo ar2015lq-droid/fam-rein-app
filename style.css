@@ -292,6 +292,8 @@ a { color: inherit; }
   font-weight: 600;
 }
 .appt-bar.allday { font-weight: 700; }
+.appt-bar.holiday { cursor: default; font-style: italic; }
+.appt-bar.ferien { cursor: default; font-style: italic; color: #3A1B2B; }
 
 /* ---------- Termin-Formular (Modal) ---------- */
 .appt-form-group { margin-bottom: 12px; text-align: left; }

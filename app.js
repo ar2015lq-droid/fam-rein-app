@@ -816,6 +816,74 @@ function getOccurrenceStartForDate(appt, dateObj) {
   return addDaysToDateStr(formatDateStr(dateObj), -remainder);
 }
 
+// ---------- Gesetzliche Feiertage RLP + Hessen (automatisch berechnet) ----------
+function computeEasterSunday(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+// Bundesweite Feiertage gelten in RLP UND Hessen; nur Allerheiligen ist RLP-exklusiv.
+const HOLIDAY_TEMPLATES = [
+  { title: 'Neujahr', states: ['RLP', 'Hessen'], fixed: '01-01' },
+  { title: 'Karfreitag', states: ['RLP', 'Hessen'], easterOffset: -2 },
+  { title: 'Ostermontag', states: ['RLP', 'Hessen'], easterOffset: 1 },
+  { title: 'Tag der Arbeit', states: ['RLP', 'Hessen'], fixed: '05-01' },
+  { title: 'Christi Himmelfahrt', states: ['RLP', 'Hessen'], easterOffset: 39 },
+  { title: 'Pfingstmontag', states: ['RLP', 'Hessen'], easterOffset: 50 },
+  { title: 'Fronleichnam', states: ['RLP', 'Hessen'], easterOffset: 60 },
+  { title: 'Tag der Deutschen Einheit', states: ['RLP', 'Hessen'], fixed: '10-03' },
+  { title: 'Allerheiligen', states: ['RLP'], fixed: '11-01' },
+  { title: '1. Weihnachtstag', states: ['RLP', 'Hessen'], fixed: '12-25' },
+  { title: '2. Weihnachtstag', states: ['RLP', 'Hessen'], fixed: '12-26' }
+];
+
+function getRLPHolidays(year) {
+  const easter = computeEasterSunday(year);
+  const off = (n) => { const d = new Date(easter); d.setDate(d.getDate() + n); return formatDateStr(d); };
+  return HOLIDAY_TEMPLATES.map((t) => ({
+    date: t.fixed ? `${year}-${t.fixed}` : off(t.easterOffset),
+    title: t.states.length === 1 ? `${t.title} (Nur ${t.states[0]})` : t.title
+  }));
+}
+
+let holidayCache = {};
+function getRLPHolidaysCached(year) {
+  if (!holidayCache[year]) holidayCache[year] = getRLPHolidays(year);
+  return holidayCache[year];
+}
+
+// ---------- Schulferien RLP + Hessen ----------
+// Diese Termine werden jährlich vom jeweiligen Kultusministerium neu festgelegt
+// und lassen sich (anders als Feiertage) nicht berechnen. Stand: Schuljahre 2025/26
+// und 2026/27 – bitte in ca. 1-2 Jahren um weitere Schuljahre ergänzen.
+const FERIEN_COLOR = '#D98BB0';
+const SCHOOL_HOLIDAYS = [
+  { state: 'RLP', title: 'Weihnachtsferien', start: '2025-12-22', end: '2026-01-07' },
+  { state: 'RLP', title: 'Osterferien', start: '2026-03-30', end: '2026-04-10' },
+  { state: 'RLP', title: 'Sommerferien', start: '2026-06-29', end: '2026-08-07' },
+  { state: 'RLP', title: 'Herbstferien', start: '2026-10-05', end: '2026-10-16' },
+  { state: 'RLP', title: 'Weihnachtsferien', start: '2026-12-23', end: '2027-01-08' },
+
+  { state: 'Hessen', title: 'Weihnachtsferien', start: '2025-12-22', end: '2026-01-10' },
+  { state: 'Hessen', title: 'Osterferien', start: '2026-03-30', end: '2026-04-10' },
+  { state: 'Hessen', title: 'Sommerferien', start: '2026-06-29', end: '2026-08-07' },
+  { state: 'Hessen', title: 'Herbstferien', start: '2026-10-05', end: '2026-10-17' },
+  { state: 'Hessen', title: 'Weihnachtsferien', start: '2026-12-23', end: '2027-01-12' }
+];
+
 function getOccurrencesForDate(dateStr) {
   const dateObj = parseDateStr(dateStr);
   const results = [];
@@ -840,6 +908,27 @@ function getOccurrencesForDate(dateStr) {
       isSpanning: mergedEnd !== merged.date
     });
   });
+
+  getRLPHolidaysCached(dateObj.getFullYear()).forEach((h) => {
+    if (h.date === dateStr) {
+      results.push({
+        apptId: null, occurrenceStart: dateStr, occurrenceEnd: dateStr, title: h.title,
+        allDay: true, time: null, durationMinutes: null, userNames: [], generalColor: 'brown',
+        isRecurring: true, isSpanning: false, isHoliday: true
+      });
+    }
+  });
+
+  SCHOOL_HOLIDAYS.forEach((f) => {
+    if (dateStr >= f.start && dateStr <= f.end) {
+      results.push({
+        apptId: null, occurrenceStart: f.start, occurrenceEnd: f.end, title: `${f.title} (${f.state})`,
+        allDay: true, time: null, durationMinutes: null, userNames: [], generalColor: null,
+        isRecurring: false, isSpanning: f.start !== f.end, isFerien: true
+      });
+    }
+  });
+
   results.sort((a, b) => {
     const aTop = a.allDay || a.isSpanning;
     const bTop = b.allDay || b.isSpanning;
@@ -867,11 +956,13 @@ function renderMonthCalendar() {
     const occ = getOccurrencesForDate(dateStr);
     const isToday = dateStr === today;
     const bars = occ.map((o) => {
-      const bg = buildMultiColorBackground(colorsForOccurrence(o));
+      const bg = o.isFerien ? FERIEN_COLOR : buildMultiColorBackground(colorsForOccurrence(o));
       let label = o.title;
       if (o.isSpanning && !o.allDay) label = '↔ ' + label;
       else if (!o.allDay && !o.isSpanning) label = `${o.time || ''} ${label}`;
-      return `<div class="appt-bar ${(o.allDay || o.isSpanning) ? 'allday' : ''}" style="background:${bg}" data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}" title="${escapeHtml(label)}">${escapeHtml(label)}</div>`;
+      const clickAttrs = (o.isHoliday || o.isFerien) ? '' : `data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}"`;
+      const specialClass = o.isHoliday ? 'holiday' : (o.isFerien ? 'ferien' : '');
+      return `<div class="appt-bar ${(o.allDay || o.isSpanning) ? 'allday' : ''} ${specialClass}" style="background:${bg}" ${clickAttrs} title="${escapeHtml(label)}">${escapeHtml(label)}</div>`;
     }).join('');
     html += `<div class="month-cal-cell ${isToday ? 'today' : ''}" data-cal-day="${dateStr}">
       <div class="month-cal-daynum">${day}</div>
