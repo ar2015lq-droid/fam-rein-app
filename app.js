@@ -904,6 +904,7 @@ function getOccurrencesForDate(dateStr) {
       durationMinutes: merged.durationMinutes || null,
       userNames: merged.userNames || [],
       generalColor: merged.generalColor || null,
+      notes: merged.notes || '',
       isRecurring: !!appt.recurrence,
       isSpanning: mergedEnd !== merged.date
     });
@@ -960,9 +961,10 @@ function renderMonthCalendar() {
       let label = o.title;
       if (o.isSpanning && !o.allDay) label = '↔ ' + label;
       else if (!o.allDay && !o.isSpanning) label = `${o.time || ''} ${label}`;
+      const tooltip = o.notes ? `${label} — ${o.notes}` : label;
       const clickAttrs = (o.isHoliday || o.isFerien) ? '' : `data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}"`;
       const specialClass = o.isHoliday ? 'holiday' : (o.isFerien ? 'ferien' : '');
-      return `<div class="appt-bar ${(o.allDay || o.isSpanning) ? 'allday' : ''} ${specialClass}" style="background:${bg}" ${clickAttrs} title="${escapeHtml(label)}">${escapeHtml(label)}</div>`;
+      return `<div class="appt-bar ${(o.allDay || o.isSpanning) ? 'allday' : ''} ${specialClass}" style="background:${bg}" ${clickAttrs} title="${escapeHtml(tooltip)}">${escapeHtml(label)}</div>`;
     }).join('');
     html += `<div class="month-cal-cell ${isToday ? 'today' : ''}" data-cal-day="${dateStr}">
       <div class="month-cal-daynum">${day}</div>
@@ -1106,6 +1108,10 @@ function openAppointmentModal(existingAppt, dateStr) {
           </div>
           <div class="section-note" style="margin-top:6px;">Beispiel: "Woche(n)" + "2" = alle 2 Wochen. Bei mehrtägigen Terminen wiederholt sich der ganze Zeitraum.</div>
         </div>
+        <div class="appt-form-group">
+          <label>Notizen (optional)</label>
+          <textarea id="appt-notes-input" class="important-input" style="min-height:70px;" placeholder="z.B. Adresse, was mitbringen, Ansprechpartner...">${escapeHtml(displayData.notes || '')}</textarea>
+        </div>
         <div class="modal-actions" style="margin-top:16px;flex-wrap:wrap;">
           ${isEdit && isAdmin(currentUser.name) ? `<button class="btn btn-danger" id="appt-delete-btn">Löschen</button>` : ''}
           <button class="btn btn-secondary" id="appt-cancel-btn">Abbrechen</button>
@@ -1161,7 +1167,7 @@ function openAppointmentModal(existingAppt, dateStr) {
     const freqVal = document.getElementById('appt-recurrence-freq-select').value;
     const intervalVal = Math.max(1, parseInt(document.getElementById('appt-recurrence-interval-input').value, 10) || 1);
     const recurrence = freqVal ? { freq: freqVal, interval: intervalVal } : null;
-    const fields = { title, date: newDate, endDate: newEndDate, allDay, time, durationMinutes, userNames, generalColor };
+    const fields = { title, date: newDate, endDate: newEndDate, allDay, time, durationMinutes, userNames, generalColor, notes: document.getElementById('appt-notes-input').value.trim() };
 
     if (!isEdit) {
       await db.collection('appointments').add({ ...fields, recurrence, exceptions: {}, createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp() });
@@ -1226,7 +1232,8 @@ function renderHomeTermine() {
   el.innerHTML = occ.map((o) => {
     const bg = buildMultiColorBackground(colorsForOccurrence(o));
     const timeLabel = o.allDay ? 'Ganztägig' : (o.time || '');
-    return `<div class="termine-row"><span class="termine-dot" style="background:${bg}"></span><span class="termine-time">${escapeHtml(timeLabel)}</span><span>${escapeHtml(o.title)}</span></div>`;
+    const noteHtml = o.notes ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-left:24px;">${escapeHtml(o.notes)}</div>` : '';
+    return `<div class="termine-row"><span class="termine-dot" style="background:${bg}"></span><span class="termine-time">${escapeHtml(timeLabel)}</span><span>${escapeHtml(o.title)}</span></div>${noteHtml}`;
   }).join('');
 }
 
