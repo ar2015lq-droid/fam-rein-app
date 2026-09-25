@@ -15,7 +15,8 @@
     <div class="login-card">
       <div class="display">👋 Willkommen!</div>
       <p>Wie heißt du? Gib deinen Namen ein, um loszulegen.</p>
-      <input id="login-name-input" type="text" placeholder="Dein Name" autocomplete="off">
+      <input id="login-name-input" type="text" placeholder="Dein Name" autocomplete="username">
+      <input id="login-password-input" type="password" placeholder="Passwort" autocomplete="current-password">
       <div class="login-error" id="login-error"></div>
       <button class="btn btn-primary" id="login-submit-btn">Loslegen</button>
     </div>
@@ -206,8 +207,12 @@
 
       <div class="tab-panel active" id="admin-users">
         <div id="admin-user-list"></div>
+        <div class="section-note">Neuen Namen + Passwort vergeben, um Zugang zu geben. Falls der Name schon existiert, aber noch kein Passwort hat (z.B. bei der Umstellung auf Passwort-Login), einfach hier den gleichen Namen nochmal mit einem Passwort eintragen.</div>
+        <div class="add-bar" style="margin-bottom:6px;">
+          <input type="text" id="admin-new-user-input" placeholder="Name...">
+        </div>
         <div class="add-bar">
-          <input type="text" id="admin-new-user-input" placeholder="Neuer Nutzername...">
+          <input type="password" id="admin-new-user-password-input" placeholder="Passwort (mind. 6 Zeichen)">
           <button class="btn btn-primary btn-small" id="admin-add-user-btn">+</button>
         </div>
       </div>
@@ -278,6 +283,7 @@
 
 <!-- Firebase (compat build – simplest for static hosting, no bundler needed) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>

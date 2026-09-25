@@ -13,6 +13,8 @@ const DEFAULT_PALETTE = ['#74AFC6', '#86B96C', '#DA8578', '#A692C4', '#E3A857', 
 // ---------- Firebase init ----------
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+const auth = firebase.auth();
+const AUTH_EMAIL_DOMAIN = '@familienapp.local'; // interne, nicht echte Adresse – nur für Firebase Auth nötig
 const FieldValue = firebase.firestore.FieldValue;
 
 // ---------- Local state ----------
@@ -105,20 +107,27 @@ function subscribeUsers() {
       if (isAdmin(currentUser.name)) renderAdminSickCalendars();
       subscribeAllTransactions();
     }
-    tryAutoLogin();
+    tryResolveLogin();
   });
 }
 
-function tryAutoLogin() {
-  if (currentUser || !usersLoaded) return;
-  const saved = localStorage.getItem('familienapp_username');
-  if (!saved) { showLogin(); return; }
-  const match = usersMap[saved.toLowerCase()];
+// pendingAuthUser: undefined = not yet known, null = signed out, object = signed in
+let pendingAuthUser;
+
+auth.onAuthStateChanged((user) => {
+  pendingAuthUser = user;
+  tryResolveLogin();
+});
+
+function tryResolveLogin() {
+  if (currentUser || !usersLoaded || pendingAuthUser === undefined) return;
+  if (!pendingAuthUser) { showLogin(); return; }
+  const name = pendingAuthUser.email.split('@')[0];
+  const match = usersMap[name.toLowerCase()];
   if (match) {
     loginAs(match);
   } else {
-    localStorage.removeItem('familienapp_username');
-    showLogin();
+    auth.signOut(); // Auth-Konto ohne passenden Nutzer-Eintrag – zur Sicherheit abmelden
   }
 }
 
@@ -128,28 +137,40 @@ function showLogin() {
 }
 
 async function handleLoginSubmit() {
-  const input = document.getElementById('login-name-input');
+  const nameInput = document.getElementById('login-name-input');
+  const passInput = document.getElementById('login-password-input');
   const errEl = document.getElementById('login-error');
-  const name = input.value.trim();
+  const name = nameInput.value.trim();
+  const password = passInput.value;
   errEl.textContent = '';
   if (!usersLoaded) { errEl.textContent = 'Einen Moment, Daten werden geladen...'; return; }
-  if (!name) { errEl.textContent = 'Bitte gib deinen Namen ein.'; return; }
+  if (!name || !password) { errEl.textContent = 'Bitte Name und Passwort eingeben.'; return; }
 
   const existing = usersMap[name.toLowerCase()];
-  if (existing) {
-    loginAs(existing);
+  const email = name.toLowerCase() + AUTH_EMAIL_DOMAIN;
+
+  if (!existing) {
+    // Bootstrap: allow "Alex" to self-create (incl. Auth-account) on first ever run
+    if (name.toLowerCase() === ADMIN_NAME.toLowerCase()) {
+      if (password.length < 6) { errEl.textContent = 'Für den Erst-Login bitte ein Passwort mit mind. 6 Zeichen vergeben.'; return; }
+      try {
+        await auth.createUserWithEmailAndPassword(email, password);
+        const data = defaultUserColors(0);
+        await db.collection('users').doc(ADMIN_NAME).set({ name: ADMIN_NAME, ...data, createdAt: FieldValue.serverTimestamp() });
+      } catch (err) {
+        errEl.textContent = 'Fehler: ' + err.message;
+      }
+      return;
+    }
+    errEl.textContent = 'Dieser Name ist nicht bekannt. Bitte wende dich an Alex.';
     return;
   }
 
-  // Bootstrap: allow "Alex" to self-create on first ever run
-  if (name.toLowerCase() === ADMIN_NAME.toLowerCase() && !usersMap[ADMIN_NAME.toLowerCase()]) {
-    const data = defaultUserColors(0);
-    await db.collection('users').doc(ADMIN_NAME).set({ name: ADMIN_NAME, ...data, createdAt: FieldValue.serverTimestamp() });
-    loginAs({ id: ADMIN_NAME, name: ADMIN_NAME, ...data });
-    return;
+  try {
+    await auth.signInWithEmailAndPassword(email, password);
+  } catch (err) {
+    errEl.textContent = 'Falscher Name oder falsches Passwort.';
   }
-
-  errEl.textContent = 'Dieser Name ist nicht bekannt. Bitte wende dich an Alex.';
 }
 
 function defaultUserColors(index) {
@@ -159,7 +180,6 @@ function defaultUserColors(index) {
 
 function loginAs(userData) {
   currentUser = userData;
-  localStorage.setItem('familienapp_username', userData.name);
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
   document.getElementById('settings-admin-link').style.display = isAdmin(currentUser.name) ? '' : 'none';
@@ -168,8 +188,7 @@ function loginAs(userData) {
 }
 
 function logout() {
-  localStorage.removeItem('familienapp_username');
-  location.reload();
+  auth.signOut().then(() => location.reload());
 }
 
 // ==========================================================
@@ -292,6 +311,7 @@ document.querySelectorAll('.nav-btn').forEach((btn) => {
 
 document.getElementById('login-submit-btn').addEventListener('click', handleLoginSubmit);
 document.getElementById('login-name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLoginSubmit(); });
+document.getElementById('login-password-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLoginSubmit(); });
 
 // ==========================================================
 // DAILY ACTIVITY / 50-CENT BONUS
@@ -1746,14 +1766,42 @@ function colorFieldHtml(u, field, label) {
 }
 
 document.getElementById('admin-add-user-btn').addEventListener('click', async () => {
-  const input = document.getElementById('admin-new-user-input');
-  const name = input.value.trim();
-  if (!name) return;
-  if (usersMap[name.toLowerCase()]) { toast('Diesen Namen gibt es schon.'); return; }
-  const idx = Object.keys(usersMap).length;
-  await db.collection('users').doc(name).set({ name, ...defaultUserColors(idx), createdAt: FieldValue.serverTimestamp() });
-  input.value = '';
-  toast(`${name} wurde hinzugefügt.`);
+  const nameInput = document.getElementById('admin-new-user-input');
+  const passInput = document.getElementById('admin-new-user-password-input');
+  const name = nameInput.value.trim();
+  const password = passInput.value;
+  if (!name || !password) { toast('Bitte Name und Passwort angeben.'); return; }
+  if (password.length < 6) { toast('Passwort muss mindestens 6 Zeichen haben.'); return; }
+
+  const btn = document.getElementById('admin-add-user-btn');
+  btn.disabled = true;
+  try {
+    // Ein zweites, temporäres Firebase-App-Objekt, damit das Anlegen des neuen
+    // Kontos NICHT die aktuell eingeloggte Admin-Sitzung ersetzt.
+    const secondary = firebase.initializeApp(firebaseConfig, 'secondary-' + Date.now());
+    const email = name.toLowerCase() + AUTH_EMAIL_DOMAIN;
+    await secondary.auth().createUserWithEmailAndPassword(email, password);
+    await secondary.auth().signOut();
+    await secondary.delete();
+
+    if (!usersMap[name.toLowerCase()]) {
+      const idx = Object.keys(usersMap).length;
+      await db.collection('users').doc(name).set({ name, ...defaultUserColors(idx), createdAt: FieldValue.serverTimestamp() });
+      toast(`${name} wurde mit Zugangsdaten angelegt.`);
+    } else {
+      toast(`Passwort für ${name} wurde eingerichtet.`);
+    }
+    nameInput.value = '';
+    passInput.value = '';
+  } catch (err) {
+    if (err.code === 'auth/email-already-in-use') {
+      toast('Für diesen Namen gibt es schon ein Passwort. Zum Ändern zuerst in der Firebase-Konsole löschen.');
+    } else {
+      toast('Fehler: ' + err.message);
+    }
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // ==========================================================
