@@ -1,0 +1,16 @@
+{
+  "name": "Familien-App",
+  "short_name": "Familie",
+  "description": "Gemeinsame Familien-App: Aufgaben, Einkaufen, Chat, Kalender, Konto und mehr.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#182224",
+  "theme_color": "#E3A857",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
