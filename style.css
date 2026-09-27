@@ -579,9 +579,9 @@ a { color: inherit; }
 .tab-panel.active { display: block; }
 
 /* ---------- Meal calendar (Wichtig) ---------- */
-.meal-form { display: flex; gap: 8px; margin-bottom: 14px; }
-.meal-form input[type="date"] { padding: 10px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
-.meal-form input[type="text"] { flex: 1; padding: 10px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
+.meal-form { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.meal-form input[type="date"] { padding: 10px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--input-bg); color: var(--text); min-width: 0; flex: 1 1 140px; }
+.meal-form input[type="text"] { flex: 1 1 120px; min-width: 0; padding: 10px; border-radius: var(--radius-s); border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
 .meal-list-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); font-size: 0.9rem; }
 .meal-list-row:first-child { border-top: none; }
 textarea.important-input {
