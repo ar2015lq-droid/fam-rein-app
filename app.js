@@ -1515,13 +1515,18 @@ function renderMealList() {
   });
 }
 
-document.getElementById('meal-save-btn').addEventListener('click', () => {
+document.getElementById('meal-save-btn').addEventListener('click', async () => {
   const date = document.getElementById('meal-date-input').value;
   const text = document.getElementById('meal-text-input').value.trim();
   if (!date || !text) { toast('Bitte Datum und Text angeben.'); return; }
-  db.collection('meals').doc(date).set({ text });
-  document.getElementById('meal-text-input').value = '';
-  toast('Gespeichert.');
+  try {
+    await db.collection('meals').doc(date).set({ text });
+    document.getElementById('meal-text-input').value = '';
+    toast('Gespeichert.');
+  } catch (err) {
+    console.error(err);
+    toast('Fehler beim Speichern: ' + err.message);
+  }
 });
 
 document.getElementById('important-save-btn').addEventListener('click', () => {
