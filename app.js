@@ -190,6 +190,7 @@ function loginAs(userData) {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
   document.getElementById('settings-admin-link').style.display = isAdmin(currentUser.name) ? '' : 'none';
+  document.getElementById('nerd-tab-btn').style.display = isAdmin(currentUser.name) ? '' : 'none';
   startAppListeners();
   showScreen('home');
 }
@@ -654,6 +655,130 @@ function addDish() {
   db.collection('dishes').add({ text, createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp() });
   input.value = '';
 }
+
+// ==========================================================
+// NERD (Gaming / Spiele / Serien) — Admin-only rated lists
+// ==========================================================
+
+const NERD_CATEGORIES = ['gaming', 'spiele', 'serien'];
+let nerdEntriesRaw = [];
+let currentNerdCategory = 'gaming';
+let currentNerdSort = 'name-asc';
+let nerdEditingId = null;
+
+function ratingOptionsHtml(selected) {
+  let html = '';
+  for (let i = 1; i <= 10; i++) {
+    html += `<option value="${i}" ${i === selected ? 'selected' : ''}>${i}</option>`;
+  }
+  return html;
+}
+
+function subscribeNerdEntries() {
+  return db.collection('nerdEntries').onSnapshot((snap) => {
+    nerdEntriesRaw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderNerdList();
+  });
+}
+
+function renderNerdList() {
+  const el = document.getElementById('nerd-list');
+  if (!el) return;
+  let items = nerdEntriesRaw.filter((e) => e.category === currentNerdCategory);
+
+  items = items.slice().sort((a, b) => {
+    if (currentNerdSort === 'name-asc') return a.name.localeCompare(b.name);
+    if (currentNerdSort === 'name-desc') return b.name.localeCompare(a.name);
+    if (currentNerdSort === 'rating-desc') return b.rating - a.rating;
+    if (currentNerdSort === 'rating-asc') return a.rating - b.rating;
+    return 0;
+  });
+
+  if (!items.length) {
+    el.innerHTML = `<div class="empty-state"><span class="emoji">🤓</span>Noch nichts eingetragen.</div>`;
+    return;
+  }
+
+  el.innerHTML = items.map((item) => {
+    if (item.id === nerdEditingId) {
+      return `
+        <div class="list-item">
+          <input type="text" class="nerd-edit-name" data-edit-name="${item.id}" value="${escapeHtml(item.name)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
+          <select class="nerd-edit-rating" data-edit-rating="${item.id}">${ratingOptionsHtml(item.rating)}</select>
+          <button class="btn-icon" data-save-nerd="${item.id}" title="Speichern">✓</button>
+          <button class="btn-icon" data-cancel-nerd="1" title="Abbrechen">✕</button>
+        </div>`;
+    }
+    return `
+      <div class="list-item">
+        <div class="item-text" style="flex:1;">${escapeHtml(item.name)}</div>
+        <span class="task-due">${item.rating}/10</span>
+        <button class="btn-icon" data-edit-nerd="${item.id}" title="Bearbeiten">✏️</button>
+        <button class="btn-icon" data-delete-nerd="${item.id}" title="Löschen">🗑️</button>
+      </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-edit-nerd]').forEach((btn) => {
+    btn.addEventListener('click', () => { nerdEditingId = btn.dataset.editNerd; renderNerdList(); });
+  });
+  el.querySelectorAll('[data-cancel-nerd]').forEach((btn) => {
+    btn.addEventListener('click', () => { nerdEditingId = null; renderNerdList(); });
+  });
+  el.querySelectorAll('[data-save-nerd]').forEach((btn) => {
+    btn.addEventListener('click', () => saveNerdEdit(btn.dataset.saveNerd));
+  });
+  el.querySelectorAll('[data-delete-nerd]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteNerdEntry(btn.dataset.deleteNerd));
+  });
+}
+
+function saveNerdEdit(id) {
+  const nameInput = document.querySelector(`[data-edit-name="${CSS.escape(id)}"]`);
+  const ratingSelect = document.querySelector(`[data-edit-rating="${CSS.escape(id)}"]`);
+  const name = nameInput.value.trim();
+  if (!name) return;
+  const rating = parseInt(ratingSelect.value, 10);
+  db.collection('nerdEntries').doc(id).update({ name, rating });
+  nerdEditingId = null;
+}
+
+async function deleteNerdEntry(id) {
+  const ok = await confirmModal('Eintrag löschen?', 'Dieser Eintrag wird endgültig entfernt.');
+  if (ok) db.collection('nerdEntries').doc(id).delete();
+}
+
+document.querySelectorAll('[data-nerd-cat]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    currentNerdCategory = btn.dataset.nerdCat;
+    document.querySelectorAll('[data-nerd-cat]').forEach((b) => b.classList.toggle('active', b === btn));
+    nerdEditingId = null;
+    renderNerdList();
+  });
+});
+
+document.getElementById('nerd-sort-select').addEventListener('change', (e) => {
+  currentNerdSort = e.target.value;
+  renderNerdList();
+});
+
+document.getElementById('nerd-add-btn').addEventListener('click', addNerdEntry);
+document.getElementById('nerd-name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addNerdEntry(); });
+
+function addNerdEntry() {
+  const nameInput = document.getElementById('nerd-name-input');
+  const ratingSelect = document.getElementById('nerd-rating-input');
+  const name = nameInput.value.trim();
+  if (!name) return;
+  const rating = parseInt(ratingSelect.value, 10);
+  db.collection('nerdEntries').add({
+    name, rating, category: currentNerdCategory,
+    createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp()
+  });
+  nameInput.value = '';
+}
+
+// Fill the "add" rating dropdown once (defaults to 5)
+document.getElementById('nerd-rating-input').innerHTML = ratingOptionsHtml(5);
 
 // ==========================================================
 // CHAT
@@ -1843,7 +1968,7 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
@@ -1966,6 +2091,7 @@ function startAppListeners() {
   unsubscribers.push(subscribeShopping());
   unsubscribers.push(subscribeTasks());
   unsubscribers.push(subscribeDishes());
+  unsubscribers.push(subscribeNerdEntries());
   unsubscribers.push(subscribeAppointments());
   unsubscribers.push(subscribeChat());
   unsubscribers.push(subscribeIdeas());
