@@ -735,14 +735,18 @@ function renderCustomLists() {
       <button class="btn-icon" data-delete-list="${l.id}" title="Liste löschen">🗑️</button>
     </div>`).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine eigene Liste.</div>`;
 
-  sharedEl.innerHTML = shared.length ? shared.map((l) => `
+  sharedEl.innerHTML = shared.length ? shared.map((l) => {
+    const ownerData = usersMap[l.owner.toLowerCase()];
+    const ownerColor = ownerData ? userColor(ownerData, 'color') : null;
+    return `
     <div class="custom-list-card">
       <div style="flex:1;">
         <div class="item-text">${escapeHtml(l.title)}</div>
-        <div class="item-meta">von ${escapeHtml(l.owner)}</div>
+        <div class="item-meta">von <span style="${ownerColor ? `color:${ownerColor};font-weight:600;` : ''}">${escapeHtml(l.owner)}</span></div>
       </div>
       <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
-    </div>`).join('') : `<div class="empty-state"><span class="emoji">👀</span>Noch nichts mit dir geteilt.</div>`;
+    </div>`;
+  }).join('') : `<div class="empty-state"><span class="emoji">👀</span>Noch nichts mit dir geteilt.</div>`;
 
   document.querySelectorAll('[data-open-list]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -862,23 +866,33 @@ function renderCustomModalBody(list) {
       <label>Freigeben für</label>
       ${Object.values(usersMap).filter((u) => u.name.toLowerCase() !== currentUser.name.toLowerCase()).map((u) => {
         const checked = (list.sharedWith || []).some((n) => n.toLowerCase() === u.name.toLowerCase());
+        const uColor = userColor(u, 'color');
         return `
           <div class="custom-share-row">
-            <label>${escapeHtml(u.name)}</label>
+            <label style="${uColor ? `color:${uColor};font-weight:600;` : ''}">${escapeHtml(u.name)}</label>
             <input type="checkbox" data-share-user="${escapeHtml(u.name)}" ${checked ? 'checked' : ''}>
           </div>`;
       }).join('')}
-    </div>` : `<div class="section-note" style="margin-top:16px;">Besitzer: ${escapeHtml(list.owner)}</div>`;
+    </div>` : (() => {
+      const ownerData = usersMap[list.owner.toLowerCase()];
+      const ownerColor = ownerData ? userColor(ownerData, 'color') : null;
+      return `<div class="section-note" style="margin-top:16px;">Besitzer: <span style="${ownerColor ? `color:${ownerColor};font-weight:600;` : ''}">${escapeHtml(list.owner)}</span></div>`;
+    })();
 
-  const commentsHtml = activeCustomComments.length ? activeCustomComments.map((c) => `
-    <div class="custom-comment">
+  const commentsHtml = activeCustomComments.length ? activeCustomComments.map((c) => {
+    const authorData = usersMap[(c.author || '').toLowerCase()];
+    const textColor = authorData ? userColor(authorData, 'color') : null;
+    const borderColor = authorData ? userColor(authorData, 'border') : null;
+    return `
+    <div class="custom-comment" style="${borderColor ? `border:2px solid ${borderColor};` : ''}">
       <div class="comment-head">
-        <span class="comment-author">${escapeHtml(c.author)}</span>
+        <span class="comment-author" style="${textColor ? `color:${textColor};` : ''}">${escapeHtml(c.author)}</span>
         <span class="comment-time">${formatTime(c.createdAt)}</span>
       </div>
       <div class="comment-text">${escapeHtml(c.text)}</div>
       ${isOwner ? `<button class="btn-icon" data-delete-comment="${c.id}" style="margin-top:4px;" title="Löschen">🗑️</button>` : ''}
-    </div>`).join('') : `<div class="section-note">Noch keine Kommentare.</div>`;
+    </div>`;
+  }).join('') : `<div class="section-note">Noch keine Kommentare.</div>`;
 
   const addCommentHtml = !isOwner ? `
     <div class="add-bar">
