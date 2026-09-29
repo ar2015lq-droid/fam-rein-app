@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 
@@ -87,7 +87,7 @@
         <button class="tab-btn active" data-tab="tasks-panel-aufgaben">✅ Aufgaben</button>
         <button class="tab-btn" data-tab="tasks-panel-einkaufen" data-track-visit="shopping">🛒 Einkaufen</button>
         <button class="tab-btn" data-tab="tasks-panel-gerichte">🍽️ Gerichte</button>
-        <button class="tab-btn" data-tab="tasks-panel-nerd" id="nerd-tab-btn" style="display:none;">🤓 Nerd</button>
+        <button class="tab-btn" data-tab="tasks-panel-nerd" id="nerd-tab-btn">Custom</button>
       </div>
 
       <div class="tab-panel active" id="tasks-panel-aufgaben">
@@ -123,26 +123,21 @@
       </div>
 
       <div class="tab-panel" id="tasks-panel-nerd">
-        <div class="tabs" id="nerd-subtabs">
-          <button class="subtab-btn active" data-nerd-cat="gaming">🎮 Gaming</button>
-          <button class="subtab-btn" data-nerd-cat="spiele">🎲 Spiele</button>
-          <button class="subtab-btn" data-nerd-cat="serien">📺 Serien</button>
+        <div class="tabs" id="custom-subtabs">
+          <button class="subtab-btn active" data-custom-view="mine">Meine Listen</button>
+          <button class="subtab-btn" data-custom-view="shared">Mit mir geteilt</button>
         </div>
-        <div class="section-note">Bewertung: 1 = schlecht, 10 = gut</div>
-        <div class="list-toolbar" style="justify-content:flex-start;gap:8px;">
-          <label style="font-size:0.82rem;color:var(--text-muted);align-self:center;">Sortieren:</label>
-          <select id="nerd-sort-select">
-            <option value="name-asc">Name A–Z</option>
-            <option value="name-desc">Name Z–A</option>
-            <option value="rating-desc">Bewertung hoch → niedrig</option>
-            <option value="rating-asc">Bewertung niedrig → hoch</option>
-          </select>
+
+        <div id="custom-view-mine">
+          <div id="custom-my-lists"></div>
+          <div class="add-bar">
+            <input type="text" id="custom-new-list-input" placeholder="Neue Liste...">
+            <button class="btn btn-primary btn-small" id="custom-add-list-btn">+</button>
+          </div>
         </div>
-        <div id="nerd-list"></div>
-        <div class="add-bar">
-          <input type="text" id="nerd-name-input" placeholder="Name...">
-          <select id="nerd-rating-input"></select>
-          <button class="btn btn-primary btn-small" id="nerd-add-btn">+</button>
+
+        <div id="custom-view-shared" style="display:none;">
+          <div id="custom-shared-lists"></div>
         </div>
       </div>
     </section>
@@ -320,6 +315,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

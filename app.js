@@ -190,7 +190,6 @@ function loginAs(userData) {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
   document.getElementById('settings-admin-link').style.display = isAdmin(currentUser.name) ? '' : 'none';
-  document.getElementById('nerd-tab-btn').style.display = isAdmin(currentUser.name) ? '' : 'none';
   startAppListeners();
   showScreen('home');
 }
@@ -657,14 +656,10 @@ function addDish() {
 }
 
 // ==========================================================
-// NERD (Gaming / Spiele / Serien) — Admin-only rated lists
+// CUSTOM LISTEN — jeder legt eigene Listen an, mit Besitzer,
+// optionaler Freigabe an andere Nutzer (nur Ansicht) und
+// Kommentaren von Betrachtern.
 // ==========================================================
-
-const NERD_CATEGORIES = ['gaming', 'spiele', 'serien'];
-let nerdEntriesRaw = [];
-let currentNerdCategory = 'gaming';
-let currentNerdSort = 'name-asc';
-let nerdEditingId = null;
 
 function ratingOptionsHtml(selected) {
   let html = '';
@@ -674,111 +669,328 @@ function ratingOptionsHtml(selected) {
   return html;
 }
 
-function subscribeNerdEntries() {
-  return db.collection('nerdEntries').onSnapshot((snap) => {
-    nerdEntriesRaw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    renderNerdList();
+let customListsRaw = [];
+let activeCustomListId = null;
+let activeCustomIsOwner = false;
+let activeCustomEntries = [];
+let activeCustomComments = [];
+let activeCustomEntryUnsub = null;
+let activeCustomCommentUnsub = null;
+let activeCustomEditingEntryId = null;
+let activeCustomSort = 'name-asc';
+
+// One-time migration: the three original admin-only lists (Gaming/Spiele/Serien)
+// become normal Custom Listen owned by Alex, carrying over their old entries.
+async function migrateNerdListsOnce() {
+  const seeds = [
+    { id: 'gaming', title: 'Gaming' },
+    { id: 'spiele', title: 'Spiele' },
+    { id: 'serien', title: 'Serien' }
+  ];
+  for (const seed of seeds) {
+    try {
+      const ref = db.collection('customLists').doc(seed.id);
+      const docSnap = await ref.get();
+      if (docSnap.exists) continue;
+      await ref.set({ title: seed.title, owner: ADMIN_NAME, sharedWith: [], createdAt: FieldValue.serverTimestamp() });
+      const oldEntriesSnap = await db.collection('nerdEntries').where('category', '==', seed.id).get();
+      if (!oldEntriesSnap.empty) {
+        const batch = db.batch();
+        oldEntriesSnap.forEach((d) => {
+          const data = d.data();
+          batch.set(ref.collection('entries').doc(), {
+            name: data.name, rating: data.rating, createdAt: data.createdAt || FieldValue.serverTimestamp()
+          });
+        });
+        await batch.commit();
+      }
+    } catch (err) {
+      console.error('Migration fehlgeschlagen für', seed.id, err);
+    }
+  }
+}
+
+function subscribeCustomLists() {
+  return db.collection('customLists').onSnapshot((snap) => {
+    customListsRaw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderCustomLists();
   });
 }
 
-function renderNerdList() {
-  const el = document.getElementById('nerd-list');
-  if (!el) return;
-  let items = nerdEntriesRaw.filter((e) => e.category === currentNerdCategory);
+function renderCustomLists() {
+  const mineEl = document.getElementById('custom-my-lists');
+  const sharedEl = document.getElementById('custom-shared-lists');
+  if (!mineEl || !sharedEl) return;
 
-  items = items.slice().sort((a, b) => {
-    if (currentNerdSort === 'name-asc') return a.name.localeCompare(b.name);
-    if (currentNerdSort === 'name-desc') return b.name.localeCompare(a.name);
-    if (currentNerdSort === 'rating-desc') return b.rating - a.rating;
-    if (currentNerdSort === 'rating-asc') return a.rating - b.rating;
+  const mine = customListsRaw.filter((l) => l.owner.toLowerCase() === currentUser.name.toLowerCase());
+  const shared = customListsRaw.filter((l) =>
+    l.owner.toLowerCase() !== currentUser.name.toLowerCase() &&
+    (l.sharedWith || []).some((n) => n.toLowerCase() === currentUser.name.toLowerCase())
+  );
+
+  mineEl.innerHTML = mine.length ? mine.map((l) => `
+    <div class="custom-list-card">
+      <div class="item-text">${escapeHtml(l.title)}</div>
+      <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
+      <button class="btn-icon" data-delete-list="${l.id}" title="Liste löschen">🗑️</button>
+    </div>`).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine eigene Liste.</div>`;
+
+  sharedEl.innerHTML = shared.length ? shared.map((l) => `
+    <div class="custom-list-card">
+      <div style="flex:1;">
+        <div class="item-text">${escapeHtml(l.title)}</div>
+        <div class="item-meta">von ${escapeHtml(l.owner)}</div>
+      </div>
+      <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
+    </div>`).join('') : `<div class="empty-state"><span class="emoji">👀</span>Noch nichts mit dir geteilt.</div>`;
+
+  document.querySelectorAll('[data-open-list]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const list = customListsRaw.find((l) => l.id === btn.dataset.openList);
+      if (list) openCustomListModal(list);
+    });
+  });
+  document.querySelectorAll('[data-delete-list]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteCustomList(btn.dataset.deleteList));
+  });
+}
+
+document.querySelectorAll('[data-custom-view]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-custom-view]').forEach((b) => b.classList.toggle('active', b === btn));
+    document.getElementById('custom-view-mine').style.display = btn.dataset.customView === 'mine' ? '' : 'none';
+    document.getElementById('custom-view-shared').style.display = btn.dataset.customView === 'shared' ? '' : 'none';
+  });
+});
+
+document.getElementById('custom-add-list-btn').addEventListener('click', addCustomList);
+document.getElementById('custom-new-list-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomList(); });
+
+function addCustomList() {
+  const input = document.getElementById('custom-new-list-input');
+  const title = input.value.trim();
+  if (!title) return;
+  db.collection('customLists').add({ title, owner: currentUser.name, sharedWith: [], createdAt: FieldValue.serverTimestamp() });
+  input.value = '';
+}
+
+async function deleteCustomList(listId) {
+  const ok = await confirmModal('Liste löschen?', 'Die komplette Liste inkl. aller Einträge und Kommentare wird endgültig gelöscht.');
+  if (!ok) return;
+  const ref = db.collection('customLists').doc(listId);
+  const [entriesSnap, commentsSnap] = await Promise.all([ref.collection('entries').get(), ref.collection('comments').get()]);
+  const batch = db.batch();
+  entriesSnap.forEach((d) => batch.delete(d.ref));
+  commentsSnap.forEach((d) => batch.delete(d.ref));
+  batch.delete(ref);
+  await batch.commit();
+  if (activeCustomListId === listId) closeCustomListModal();
+  toast('Liste gelöscht.');
+}
+
+function openCustomListModal(list) {
+  activeCustomListId = list.id;
+  activeCustomIsOwner = list.owner.toLowerCase() === currentUser.name.toLowerCase();
+  activeCustomEditingEntryId = null;
+  activeCustomSort = 'name-asc';
+  activeCustomEntries = [];
+  activeCustomComments = [];
+
+  if (activeCustomEntryUnsub) activeCustomEntryUnsub();
+  if (activeCustomCommentUnsub) activeCustomCommentUnsub();
+
+  activeCustomEntryUnsub = db.collection('customLists').doc(list.id).collection('entries').onSnapshot((snap) => {
+    activeCustomEntries = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (activeCustomListId === list.id) renderCustomModalBody(list);
+  });
+  activeCustomCommentUnsub = db.collection('customLists').doc(list.id).collection('comments').orderBy('createdAt', 'asc').onSnapshot((snap) => {
+    activeCustomComments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (activeCustomListId === list.id) renderCustomModalBody(list);
+  });
+
+  renderCustomModalBody(list);
+}
+
+function closeCustomListModal() {
+  if (activeCustomEntryUnsub) { activeCustomEntryUnsub(); activeCustomEntryUnsub = null; }
+  if (activeCustomCommentUnsub) { activeCustomCommentUnsub(); activeCustomCommentUnsub = null; }
+  activeCustomListId = null;
+  document.getElementById('modal-root').innerHTML = '';
+}
+
+function renderCustomModalBody(list) {
+  const root = document.getElementById('modal-root');
+  const isOwner = activeCustomIsOwner;
+
+  const entries = activeCustomEntries.slice().sort((a, b) => {
+    if (activeCustomSort === 'name-asc') return a.name.localeCompare(b.name);
+    if (activeCustomSort === 'name-desc') return b.name.localeCompare(a.name);
+    if (activeCustomSort === 'rating-desc') return b.rating - a.rating;
+    if (activeCustomSort === 'rating-asc') return a.rating - b.rating;
     return 0;
   });
 
-  if (!items.length) {
-    el.innerHTML = `<div class="empty-state"><span class="emoji">🤓</span>Noch nichts eingetragen.</div>`;
-    return;
-  }
-
-  el.innerHTML = items.map((item) => {
-    if (item.id === nerdEditingId) {
+  const entriesHtml = entries.length ? entries.map((item) => {
+    if (isOwner && item.id === activeCustomEditingEntryId) {
       return `
         <div class="list-item">
-          <input type="text" class="nerd-edit-name" data-edit-name="${item.id}" value="${escapeHtml(item.name)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
-          <select class="nerd-edit-rating" data-edit-rating="${item.id}">${ratingOptionsHtml(item.rating)}</select>
-          <button class="btn-icon" data-save-nerd="${item.id}" title="Speichern">✓</button>
-          <button class="btn-icon" data-cancel-nerd="1" title="Abbrechen">✕</button>
+          <input type="text" data-custom-edit-name="${item.id}" value="${escapeHtml(item.name)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
+          <select data-custom-edit-rating="${item.id}">${ratingOptionsHtml(item.rating)}</select>
+          <button class="btn-icon" data-custom-save-entry="${item.id}" title="Speichern">✓</button>
+          <button class="btn-icon" data-custom-cancel-entry="1" title="Abbrechen">✕</button>
         </div>`;
     }
     return `
       <div class="list-item">
         <div class="item-text" style="flex:1;">${escapeHtml(item.name)}</div>
         <span class="task-due">${item.rating}/10</span>
-        <button class="btn-icon" data-edit-nerd="${item.id}" title="Bearbeiten">✏️</button>
-        <button class="btn-icon" data-delete-nerd="${item.id}" title="Löschen">🗑️</button>
+        ${isOwner ? `
+          <button class="btn-icon" data-custom-edit-entry="${item.id}" title="Bearbeiten">✏️</button>
+          <button class="btn-icon" data-custom-delete-entry="${item.id}" title="Löschen">🗑️</button>` : ''}
       </div>`;
-  }).join('');
+  }).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine Einträge.</div>`;
 
-  el.querySelectorAll('[data-edit-nerd]').forEach((btn) => {
-    btn.addEventListener('click', () => { nerdEditingId = btn.dataset.editNerd; renderNerdList(); });
+  const addRowHtml = isOwner ? `
+    <div class="add-bar">
+      <input type="text" id="custom-entry-name-input" placeholder="Name...">
+      <select id="custom-entry-rating-input">${ratingOptionsHtml(5)}</select>
+      <button class="btn btn-primary btn-small" id="custom-entry-add-btn">+</button>
+    </div>` : '';
+
+  const shareHtml = isOwner ? `
+    <div class="appt-form-group" style="margin-top:16px;">
+      <label>Freigeben für</label>
+      ${Object.values(usersMap).filter((u) => u.name.toLowerCase() !== currentUser.name.toLowerCase()).map((u) => {
+        const checked = (list.sharedWith || []).some((n) => n.toLowerCase() === u.name.toLowerCase());
+        return `
+          <div class="custom-share-row">
+            <label>${escapeHtml(u.name)}</label>
+            <input type="checkbox" data-share-user="${escapeHtml(u.name)}" ${checked ? 'checked' : ''}>
+          </div>`;
+      }).join('')}
+    </div>` : `<div class="section-note" style="margin-top:16px;">Besitzer: ${escapeHtml(list.owner)}</div>`;
+
+  const commentsHtml = activeCustomComments.length ? activeCustomComments.map((c) => `
+    <div class="custom-comment">
+      <div class="comment-head">
+        <span class="comment-author">${escapeHtml(c.author)}</span>
+        <span class="comment-time">${formatTime(c.createdAt)}</span>
+      </div>
+      <div class="comment-text">${escapeHtml(c.text)}</div>
+      ${isOwner ? `<button class="btn-icon" data-delete-comment="${c.id}" style="margin-top:4px;" title="Löschen">🗑️</button>` : ''}
+    </div>`).join('') : `<div class="section-note">Noch keine Kommentare.</div>`;
+
+  const addCommentHtml = !isOwner ? `
+    <div class="add-bar">
+      <input type="text" id="custom-comment-input" placeholder="Kommentar schreiben...">
+      <button class="btn btn-primary btn-small" id="custom-comment-add-btn">+</button>
+    </div>` : '';
+
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal-box" style="max-width:440px;width:92%;text-align:left;max-height:88vh;overflow-y:auto;">
+        <h3>${escapeHtml(list.title)}</h3>
+        <div class="list-toolbar" style="justify-content:flex-start;gap:8px;margin-top:10px;">
+          <label style="font-size:0.82rem;color:var(--text-muted);align-self:center;">Sortieren:</label>
+          <select class="custom-sort-select" id="custom-sort-select">
+            <option value="name-asc" ${activeCustomSort === 'name-asc' ? 'selected' : ''}>Name A–Z</option>
+            <option value="name-desc" ${activeCustomSort === 'name-desc' ? 'selected' : ''}>Name Z–A</option>
+            <option value="rating-desc" ${activeCustomSort === 'rating-desc' ? 'selected' : ''}>Bewertung hoch → niedrig</option>
+            <option value="rating-asc" ${activeCustomSort === 'rating-asc' ? 'selected' : ''}>Bewertung niedrig → hoch</option>
+          </select>
+        </div>
+        <div style="margin-top:10px;">${entriesHtml}</div>
+        ${addRowHtml}
+        ${shareHtml}
+        <h3 style="margin-top:18px;font-size:1rem;">Kommentare</h3>
+        <div style="margin-top:8px;">${commentsHtml}</div>
+        ${addCommentHtml}
+        <div class="modal-actions" style="margin-top:18px;">
+          <button class="btn btn-secondary" id="custom-modal-close-btn">Schließen</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('custom-modal-close-btn').addEventListener('click', closeCustomListModal);
+  document.getElementById('custom-sort-select').addEventListener('change', (e) => {
+    activeCustomSort = e.target.value;
+    renderCustomModalBody(list);
   });
-  el.querySelectorAll('[data-cancel-nerd]').forEach((btn) => {
-    btn.addEventListener('click', () => { nerdEditingId = null; renderNerdList(); });
-  });
-  el.querySelectorAll('[data-save-nerd]').forEach((btn) => {
-    btn.addEventListener('click', () => saveNerdEdit(btn.dataset.saveNerd));
-  });
-  el.querySelectorAll('[data-delete-nerd]').forEach((btn) => {
-    btn.addEventListener('click', () => deleteNerdEntry(btn.dataset.deleteNerd));
-  });
+
+  if (isOwner) {
+    document.querySelectorAll('[data-custom-edit-entry]').forEach((btn) => {
+      btn.addEventListener('click', () => { activeCustomEditingEntryId = btn.dataset.customEditEntry; renderCustomModalBody(list); });
+    });
+    document.querySelectorAll('[data-custom-cancel-entry]').forEach((btn) => {
+      btn.addEventListener('click', () => { activeCustomEditingEntryId = null; renderCustomModalBody(list); });
+    });
+    document.querySelectorAll('[data-custom-save-entry]').forEach((btn) => {
+      btn.addEventListener('click', () => saveCustomEntryEdit(list, btn.dataset.customSaveEntry));
+    });
+    document.querySelectorAll('[data-custom-delete-entry]').forEach((btn) => {
+      btn.addEventListener('click', () => deleteCustomEntry(list, btn.dataset.customDeleteEntry));
+    });
+    const addBtn = document.getElementById('custom-entry-add-btn');
+    if (addBtn) addBtn.addEventListener('click', () => addCustomEntry(list));
+    const nameInput = document.getElementById('custom-entry-name-input');
+    if (nameInput) nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomEntry(list); });
+
+    document.querySelectorAll('[data-share-user]').forEach((cb) => {
+      cb.addEventListener('change', (e) => {
+        const username = cb.dataset.shareUser;
+        const ref = db.collection('customLists').doc(list.id);
+        if (e.target.checked) ref.update({ sharedWith: FieldValue.arrayUnion(username) });
+        else ref.update({ sharedWith: FieldValue.arrayRemove(username) });
+      });
+    });
+    document.querySelectorAll('[data-delete-comment]').forEach((btn) => {
+      btn.addEventListener('click', () => deleteCustomComment(list, btn.dataset.deleteComment));
+    });
+  } else {
+    const addCommentBtn = document.getElementById('custom-comment-add-btn');
+    if (addCommentBtn) addCommentBtn.addEventListener('click', () => addCustomComment(list));
+    const commentInput = document.getElementById('custom-comment-input');
+    if (commentInput) commentInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomComment(list); });
+  }
 }
 
-function saveNerdEdit(id) {
-  const nameInput = document.querySelector(`[data-edit-name="${CSS.escape(id)}"]`);
-  const ratingSelect = document.querySelector(`[data-edit-rating="${CSS.escape(id)}"]`);
+function saveCustomEntryEdit(list, entryId) {
+  const nameInput = document.querySelector(`[data-custom-edit-name="${CSS.escape(entryId)}"]`);
+  const ratingSelect = document.querySelector(`[data-custom-edit-rating="${CSS.escape(entryId)}"]`);
   const name = nameInput.value.trim();
   if (!name) return;
   const rating = parseInt(ratingSelect.value, 10);
-  db.collection('nerdEntries').doc(id).update({ name, rating });
-  nerdEditingId = null;
+  db.collection('customLists').doc(list.id).collection('entries').doc(entryId).update({ name, rating });
+  activeCustomEditingEntryId = null;
 }
 
-async function deleteNerdEntry(id) {
+async function deleteCustomEntry(list, entryId) {
   const ok = await confirmModal('Eintrag löschen?', 'Dieser Eintrag wird endgültig entfernt.');
-  if (ok) db.collection('nerdEntries').doc(id).delete();
+  if (ok) db.collection('customLists').doc(list.id).collection('entries').doc(entryId).delete();
 }
 
-document.querySelectorAll('[data-nerd-cat]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    currentNerdCategory = btn.dataset.nerdCat;
-    document.querySelectorAll('[data-nerd-cat]').forEach((b) => b.classList.toggle('active', b === btn));
-    nerdEditingId = null;
-    renderNerdList();
-  });
-});
-
-document.getElementById('nerd-sort-select').addEventListener('change', (e) => {
-  currentNerdSort = e.target.value;
-  renderNerdList();
-});
-
-document.getElementById('nerd-add-btn').addEventListener('click', addNerdEntry);
-document.getElementById('nerd-name-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addNerdEntry(); });
-
-function addNerdEntry() {
-  const nameInput = document.getElementById('nerd-name-input');
-  const ratingSelect = document.getElementById('nerd-rating-input');
+function addCustomEntry(list) {
+  const nameInput = document.getElementById('custom-entry-name-input');
+  const ratingSelect = document.getElementById('custom-entry-rating-input');
   const name = nameInput.value.trim();
   if (!name) return;
   const rating = parseInt(ratingSelect.value, 10);
-  db.collection('nerdEntries').add({
-    name, rating, category: currentNerdCategory,
-    createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp()
-  });
+  db.collection('customLists').doc(list.id).collection('entries').add({ name, rating, createdAt: FieldValue.serverTimestamp() });
   nameInput.value = '';
 }
 
-// Fill the "add" rating dropdown once (defaults to 5)
-document.getElementById('nerd-rating-input').innerHTML = ratingOptionsHtml(5);
+function addCustomComment(list) {
+  const input = document.getElementById('custom-comment-input');
+  const text = input.value.trim();
+  if (!text) return;
+  db.collection('customLists').doc(list.id).collection('comments').add({ author: currentUser.name, text, createdAt: FieldValue.serverTimestamp() });
+  input.value = '';
+}
+
+async function deleteCustomComment(list, commentId) {
+  const ok = await confirmModal('Kommentar löschen?', 'Dieser Kommentar wird endgültig entfernt.');
+  if (ok) db.collection('customLists').doc(list.id).collection('comments').doc(commentId).delete();
+}
 
 // ==========================================================
 // CHAT
@@ -1968,7 +2180,7 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
@@ -2091,7 +2303,8 @@ function startAppListeners() {
   unsubscribers.push(subscribeShopping());
   unsubscribers.push(subscribeTasks());
   unsubscribers.push(subscribeDishes());
-  unsubscribers.push(subscribeNerdEntries());
+  unsubscribers.push(subscribeCustomLists());
+  migrateNerdListsOnce();
   unsubscribers.push(subscribeAppointments());
   unsubscribers.push(subscribeChat());
   unsubscribers.push(subscribeIdeas());
