@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 
@@ -83,11 +83,11 @@
     <section class="screen" id="screen-tasks" data-screen="tasks">
       <div class="screen-header"><h1 id="tasks-screen-title">📋 Listen</h1></div>
 
-      <div class="tabs tab-group" id="tasks-tab-group">
-        <button class="tab-btn active" data-tab="tasks-panel-aufgaben">✅ Aufgaben</button>
-        <button class="tab-btn" data-tab="tasks-panel-einkaufen" data-track-visit="shopping">🛒 Einkaufen</button>
-        <button class="tab-btn" data-tab="tasks-panel-gerichte">🍽️ Gerichte</button>
-        <button class="tab-btn" data-tab="tasks-panel-nerd" id="nerd-tab-btn">Custom</button>
+      <div class="tabs tabs-grid tab-group" id="tasks-tab-group">
+        <button class="tab-btn active" data-tab="tasks-panel-aufgaben"><span class="tab-icon">✅</span>Aufgaben</button>
+        <button class="tab-btn" data-tab="tasks-panel-einkaufen" data-track-visit="shopping"><span class="tab-icon">🛒</span>Einkaufen</button>
+        <button class="tab-btn" data-tab="tasks-panel-gerichte"><span class="tab-icon">🍽️</span>Gerichte</button>
+        <button class="tab-btn" data-tab="tasks-panel-nerd" id="nerd-tab-btn"><span class="tab-icon">🧩</span>Custom</button>
       </div>
 
       <div class="tab-panel active" id="tasks-panel-aufgaben">
@@ -315,6 +315,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
