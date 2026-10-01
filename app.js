@@ -189,7 +189,7 @@ function loginAs(userData) {
   currentUser = userData;
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
-  document.getElementById('settings-admin-link').style.display = isAdmin(currentUser.name) ? '' : 'none';
+  document.getElementById('settings-item-admin').style.display = isAdmin(currentUser.name) ? '' : 'none';
   startAppListeners();
   showScreen('home');
 }
