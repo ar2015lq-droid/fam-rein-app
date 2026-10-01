@@ -1923,7 +1923,13 @@ function renderAdminBirthdays() {
     el.innerHTML = `<div class="empty-state"><span class="emoji">🎂</span>Noch keine Geburtstage eingetragen.</div>`;
     return;
   }
-  const sorted = birthdaysRaw.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = birthdaysRaw.slice().sort((a, b) => {
+    const da = parseDateStr(a.date);
+    const db_ = parseDateStr(b.date);
+    const monthDayA = da.getMonth() * 100 + da.getDate();
+    const monthDayB = db_.getMonth() * 100 + db_.getDate();
+    return monthDayA - monthDayB;
+  });
   el.innerHTML = sorted.map((b) => {
     const dateLabel = new Date(b.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
     if (b.id === birthdayEditingId) {
