@@ -1307,6 +1307,19 @@ function getOccurrencesForDate(dateStr) {
     }
   });
 
+  birthdaysRaw.forEach((b) => {
+    const birthObj = parseDateStr(b.date);
+    if (dateObj >= birthObj && dateObj.getMonth() === birthObj.getMonth() && dateObj.getDate() === birthObj.getDate()) {
+      const age = dateObj.getFullYear() - birthObj.getFullYear();
+      const title = b.isOriginal ? `🎂 ${b.name} wird ${age}` : `🎂 ${b.name}`;
+      results.push({
+        apptId: null, occurrenceStart: dateStr, occurrenceEnd: dateStr, title,
+        allDay: true, time: null, durationMinutes: null, userNames: [], generalColor: null,
+        isRecurring: true, isSpanning: false, isBirthday: true
+      });
+    }
+  });
+
   SCHOOL_HOLIDAYS.forEach((f) => {
     if (dateStr >= f.start && dateStr <= f.end) {
       results.push({
@@ -1344,13 +1357,13 @@ function renderMonthCalendar() {
     const occ = getOccurrencesForDate(dateStr);
     const isToday = dateStr === today;
     const bars = occ.map((o) => {
-      const bg = o.isFerien ? FERIEN_COLOR : buildMultiColorBackground(colorsForOccurrence(o));
+      const bg = o.isFerien ? FERIEN_COLOR : (o.isBirthday ? BIRTHDAY_COLOR : buildMultiColorBackground(colorsForOccurrence(o)));
       let label = o.title;
       if (o.isSpanning && !o.allDay) label = '↔ ' + label;
       else if (!o.allDay && !o.isSpanning) label = `${o.time || ''} ${label}`;
       const tooltip = o.notes ? `${label} — ${o.notes}` : label;
-      const clickAttrs = (o.isHoliday || o.isFerien) ? '' : `data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}"`;
-      const specialClass = o.isHoliday ? 'holiday' : (o.isFerien ? 'ferien' : '');
+      const clickAttrs = (o.isHoliday || o.isFerien || o.isBirthday) ? '' : `data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}"`;
+      const specialClass = o.isHoliday ? 'holiday' : (o.isFerien ? 'ferien' : (o.isBirthday ? 'birthday' : ''));
       return `<div class="appt-bar ${(o.allDay || o.isSpanning) ? 'allday' : ''} ${specialClass}" style="background:${bg}" ${clickAttrs} title="${escapeHtml(tooltip)}">${escapeHtml(label)}</div>`;
     }).join('');
     html += `<div class="month-cal-cell ${isToday ? 'today' : ''}" data-cal-day="${dateStr}">
@@ -1887,6 +1900,102 @@ document.getElementById('important-save-btn').addEventListener('click', () => {
 });
 
 // ==========================================================
+// GEBURTSTAGE — automatisch jedes Jahr im Kalender (hellblau)
+// ==========================================================
+
+const BIRTHDAY_COLOR = '#8EC6E6';
+let birthdaysRaw = [];
+let birthdayEditingId = null;
+
+function subscribeBirthdays() {
+  return db.collection('birthdays').onSnapshot((snap) => {
+    birthdaysRaw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderAdminBirthdays();
+    renderHomeTermine();
+    if (currentScreen === 'aktuell') renderMonthCalendar();
+  });
+}
+
+function renderAdminBirthdays() {
+  const el = document.getElementById('admin-birthday-list');
+  if (!el) return;
+  if (!birthdaysRaw.length) {
+    el.innerHTML = `<div class="empty-state"><span class="emoji">🎂</span>Noch keine Geburtstage eingetragen.</div>`;
+    return;
+  }
+  const sorted = birthdaysRaw.slice().sort((a, b) => a.name.localeCompare(b.name));
+  el.innerHTML = sorted.map((b) => {
+    const dateLabel = new Date(b.date).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    if (b.id === birthdayEditingId) {
+      return `
+        <div class="list-item">
+          <input type="text" data-bday-edit-name="${b.id}" value="${escapeHtml(b.name)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
+          <input type="date" data-bday-edit-date="${b.id}" value="${b.date}" style="padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
+          <label style="display:flex;align-items:center;gap:4px;font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">
+            <input type="checkbox" data-bday-edit-original="${b.id}" ${b.isOriginal ? 'checked' : ''}> Orig.
+          </label>
+          <button class="btn-icon" data-bday-save="${b.id}" title="Speichern">✓</button>
+          <button class="btn-icon" data-bday-cancel="1" title="Abbrechen">✕</button>
+        </div>`;
+    }
+    return `
+      <div class="list-item">
+        <div style="flex:1;">
+          <div class="item-text">${escapeHtml(b.name)}</div>
+          <div class="item-meta">${dateLabel}${b.isOriginal ? ' · Original (mit Alter)' : ''}</div>
+        </div>
+        <button class="btn-icon" data-bday-edit="${b.id}" title="Bearbeiten">✏️</button>
+        <button class="btn-icon" data-bday-delete="${b.id}" title="Löschen">🗑️</button>
+      </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-bday-edit]').forEach((btn) => {
+    btn.addEventListener('click', () => { birthdayEditingId = btn.dataset.bdayEdit; renderAdminBirthdays(); });
+  });
+  el.querySelectorAll('[data-bday-cancel]').forEach((btn) => {
+    btn.addEventListener('click', () => { birthdayEditingId = null; renderAdminBirthdays(); });
+  });
+  el.querySelectorAll('[data-bday-save]').forEach((btn) => {
+    btn.addEventListener('click', () => saveBirthdayEdit(btn.dataset.bdaySave));
+  });
+  el.querySelectorAll('[data-bday-delete]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteBirthday(btn.dataset.bdayDelete));
+  });
+}
+
+function saveBirthdayEdit(id) {
+  const nameInput = document.querySelector(`[data-bday-edit-name="${CSS.escape(id)}"]`);
+  const dateInput = document.querySelector(`[data-bday-edit-date="${CSS.escape(id)}"]`);
+  const origInput = document.querySelector(`[data-bday-edit-original="${CSS.escape(id)}"]`);
+  const name = nameInput.value.trim();
+  const date = dateInput.value;
+  if (!name || !date) return;
+  db.collection('birthdays').doc(id).update({ name, date, isOriginal: origInput.checked });
+  birthdayEditingId = null;
+}
+
+async function deleteBirthday(id) {
+  const ok = await confirmModal('Geburtstag löschen?', 'Dieser Eintrag wird endgültig entfernt.');
+  if (ok) db.collection('birthdays').doc(id).delete();
+}
+
+document.getElementById('birthday-add-btn').addEventListener('click', () => {
+  const nameInput = document.getElementById('birthday-name-input');
+  const dateInput = document.getElementById('birthday-date-input');
+  const origInput = document.getElementById('birthday-original-input');
+  const name = nameInput.value.trim();
+  const date = dateInput.value;
+  if (!name || !date) { toast('Bitte Name und Datum angeben.'); return; }
+  db.collection('birthdays').add({
+    name, date, isOriginal: origInput.checked,
+    createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp()
+  });
+  nameInput.value = '';
+  dateInput.value = '';
+  origInput.checked = false;
+});
+
+// ==========================================================
 // KRANK (sick days) — Admin manages, shown on Startseite
 // ==========================================================
 
@@ -2194,7 +2303,7 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
@@ -2327,6 +2436,7 @@ function startAppListeners() {
   unsubscribers.push(subscribeMeals());
   unsubscribers.push(subscribeImportant());
   unsubscribers.push(subscribeHomeOrder());
+  unsubscribers.push(subscribeBirthdays());
   unsubscribers.push(subscribeSickDays());
   unsubscribers.push(subscribeSickSettings());
   unsubscribers.push(subscribeSickCalendarOrder());

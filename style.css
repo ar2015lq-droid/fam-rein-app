@@ -296,6 +296,7 @@ a { color: inherit; }
 .appt-bar.allday { font-weight: 700; }
 .appt-bar.holiday { cursor: default; font-style: italic; }
 .appt-bar.ferien { cursor: default; font-style: italic; color: #3A1B2B; }
+.appt-bar.birthday { cursor: default; font-weight: 700; color: #16313D; }
 
 /* ---------- Termin-Formular (Modal) ---------- */
 .appt-form-group { margin-bottom: 12px; text-align: left; }
@@ -416,7 +417,7 @@ a { color: inherit; }
   padding: 10px 0 4px;
   background: linear-gradient(to top, var(--bg) 60%, transparent);
 }
-.add-bar input, .add-bar select {
+.add-bar input:not([type="checkbox"]), .add-bar select {
   flex: 1;
   min-width: 0;
   padding: 12px 14px;
