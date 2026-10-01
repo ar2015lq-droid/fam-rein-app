@@ -290,6 +290,9 @@ function showScreen(name) {
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.dataset.screen === name));
   document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays') && b.dataset.target === 'settings')));
 
+  if (name === 'home') {
+    maybeShowBirthdayConfetti();
+  }
   if (name === 'aktuell') {
     const chatPanelActive = document.getElementById('aktuell-panel-chat').classList.contains('active');
     if (chatPanelActive) {
@@ -1912,7 +1915,42 @@ function subscribeBirthdays() {
     renderAdminBirthdays();
     renderHomeTermine();
     if (currentScreen === 'aktuell') renderMonthCalendar();
+    if (currentScreen === 'home') maybeShowBirthdayConfetti();
   });
+}
+
+function todaysBirthdays() {
+  const t = parseDateStr(todayStr());
+  return birthdaysRaw.filter((b) => {
+    const bd = parseDateStr(b.date);
+    return bd.getMonth() === t.getMonth() && bd.getDate() === t.getDate();
+  });
+}
+
+function maybeShowBirthdayConfetti() {
+  if (!todaysBirthdays().length) return;
+  const flagKey = 'confettiShown_' + todayStr();
+  if (sessionStorage.getItem(flagKey)) return;
+  sessionStorage.setItem(flagKey, '1');
+  launchConfetti();
+}
+
+function launchConfetti() {
+  const container = document.createElement('div');
+  container.className = 'confetti-container';
+  document.body.appendChild(container);
+  const colors = ['#E3A857', '#74AFC6', '#86B96C', '#DA8578', '#A692C4', '#8EC6E6'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.left = Math.random() * 100 + 'vw';
+    piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.animationDelay = (Math.random() * 0.5) + 's';
+    piece.style.animationDuration = (2.5 + Math.random() * 1.5) + 's';
+    piece.style.transform = `rotate(${Math.round(Math.random() * 360)}deg)`;
+    container.appendChild(piece);
+  }
+  setTimeout(() => container.remove(), 4500);
 }
 
 function renderAdminBirthdays() {
