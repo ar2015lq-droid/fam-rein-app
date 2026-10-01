@@ -195,21 +195,40 @@
     <!-- ---------- Einstellungen ---------- -->
     <section class="screen" id="screen-settings" data-screen="settings">
       <div class="screen-header"><h1>⚙️ Einstellungen</h1></div>
-      <div class="setting-row">
-        <div>
-          <div style="font-weight:600;">Dunkelmodus</div>
-          <div style="font-size:0.8rem;color:var(--text-muted);">Für dieses Gerät und deinen Namen</div>
+      <div id="settings-orderable">
+        <div class="settings-item" id="settings-item-darkmode" data-order-key="darkmode">
+          <div class="setting-row" style="flex:1;margin-bottom:0;">
+            <div>
+              <div style="font-weight:600;">Dunkelmodus</div>
+              <div style="font-size:0.8rem;color:var(--text-muted);">Für dieses Gerät und deinen Namen</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="darkmode-toggle">
+              <span class="switch-track"></span>
+            </label>
+          </div>
+          <div class="item-order-controls">
+            <button class="btn-icon" data-move-setting-up="darkmode">↑</button>
+            <button class="btn-icon" data-move-setting-down="darkmode">↓</button>
+          </div>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="darkmode-toggle">
-          <span class="switch-track"></span>
-        </label>
+
+        <div class="settings-item" id="settings-item-geburtstage" data-order-key="geburtstage">
+          <button class="btn btn-secondary" id="settings-birthdays-link" style="flex:1;margin:0;">🎂 Geburtstage</button>
+          <div class="item-order-controls">
+            <button class="btn-icon" data-move-setting-up="geburtstage">↑</button>
+            <button class="btn-icon" data-move-setting-down="geburtstage">↓</button>
+          </div>
+        </div>
+
+        <div class="settings-item" id="settings-item-admin" data-order-key="admin" style="display:none;">
+          <button class="btn btn-secondary" id="settings-admin-link" style="flex:1;margin:0;">🛠️ Admin-Bereich öffnen</button>
+          <div class="item-order-controls">
+            <button class="btn-icon" data-move-setting-up="admin">↑</button>
+            <button class="btn-icon" data-move-setting-down="admin">↓</button>
+          </div>
+        </div>
       </div>
-      <button class="btn btn-secondary" id="settings-birthdays-link" style="margin-top:20px;">🎂 Geburtstage</button>
-
-      <button class="btn btn-ghost" id="logout-btn" style="margin-top:20px;">Anderen Namen verwenden</button>
-
-      <button class="btn btn-secondary" id="settings-admin-link" style="margin-top:12px;display:none;">🛠️ Admin-Bereich öffnen</button>
     </section>
 
     <!-- ---------- Admin (inkl. Wichtig als Unterreiter, nur Alex) ---------- -->
@@ -338,6 +357,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

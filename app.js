@@ -280,7 +280,6 @@ document.getElementById('darkmode-toggle').addEventListener('change', (e) => {
   db.collection('settings').doc(currentUser.name).set({ darkMode: dark }, { merge: true });
 });
 
-document.getElementById('logout-btn').addEventListener('click', logout);
 
 // ==========================================================
 // NAVIGATION
@@ -2376,6 +2375,51 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
   });
 });
 
+const DEFAULT_SETTINGS_ORDER = ['darkmode', 'geburtstage', 'admin'];
+let settingsOrder = DEFAULT_SETTINGS_ORDER.slice();
+
+function subscribeSettingsOrder() {
+  return db.collection('config').doc('settingsOrder').onSnapshot((doc) => {
+    let order = (doc.exists && Array.isArray(doc.data().order)) ? doc.data().order.slice() : [];
+    DEFAULT_SETTINGS_ORDER.forEach((k) => { if (!order.includes(k)) order.push(k); });
+    order = order.filter((k) => DEFAULT_SETTINGS_ORDER.includes(k));
+    settingsOrder = order;
+    renderSettingsOrder();
+  });
+}
+
+function renderSettingsOrder() {
+  const container = document.getElementById('settings-orderable');
+  if (!container) return;
+  settingsOrder.forEach((key, idx) => {
+    const el = document.getElementById('settings-item-' + key);
+    if (!el) return;
+    container.appendChild(el);
+    const upBtn = el.querySelector('[data-move-setting-up]');
+    const downBtn = el.querySelector('[data-move-setting-down]');
+    if (upBtn) upBtn.disabled = idx === 0;
+    if (downBtn) downBtn.disabled = idx === settingsOrder.length - 1;
+  });
+}
+
+function moveSettingsItem(key, direction) {
+  const idx = settingsOrder.indexOf(key);
+  if (idx < 0) return;
+  const newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= settingsOrder.length) return;
+  const newOrder = settingsOrder.slice();
+  const [item] = newOrder.splice(idx, 1);
+  newOrder.splice(newIdx, 0, item);
+  db.collection('config').doc('settingsOrder').set({ order: newOrder });
+}
+
+document.querySelectorAll('[data-move-setting-up]').forEach((btn) => {
+  btn.addEventListener('click', () => moveSettingsItem(btn.dataset.moveSettingUp, -1));
+});
+document.querySelectorAll('[data-move-setting-down]').forEach((btn) => {
+  btn.addEventListener('click', () => moveSettingsItem(btn.dataset.moveSettingDown, 1));
+});
+
 document.getElementById('settings-admin-link').addEventListener('click', () => showScreen('admin'));
 document.getElementById('admin-back-btn').addEventListener('click', () => showScreen('settings'));
 document.getElementById('settings-birthdays-link').addEventListener('click', () => showScreen('birthdays'));
@@ -2445,6 +2489,7 @@ function startAppListeners() {
   unsubscribers.push(subscribeImportant());
   unsubscribers.push(subscribeHomeOrder());
   unsubscribers.push(subscribeBirthdays());
+  unsubscribers.push(subscribeSettingsOrder());
   unsubscribers.push(subscribeSickDays());
   unsubscribers.push(subscribeSickSettings());
   unsubscribers.push(subscribeSickCalendarOrder());

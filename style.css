@@ -345,6 +345,9 @@ a { color: inherit; }
 /* ---------- Sick-day calendar (Admin) ---------- */
 .user-sick-card { background: var(--surface); border-radius: var(--radius-m); padding: 14px; margin-bottom: 12px; box-shadow: var(--shadow-soft); border: 2px solid transparent; }
 .cal-order-controls { display: flex; gap: 4px; }
+
+.settings-item { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.item-order-controls { display: flex; gap: 4px; flex-shrink: 0; }
 .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .cal-grid-wrap { max-width: 80%; margin: 0 auto; }
 .cal-header .cal-title { font-weight: 700; font-family: var(--font-display); font-size: 0.95rem; }
