@@ -289,7 +289,7 @@ document.getElementById('logout-btn').addEventListener('click', logout);
 function showScreen(name) {
   currentScreen = name;
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.dataset.screen === name));
-  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || (name === 'admin' && b.dataset.target === 'settings')));
+  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays') && b.dataset.target === 'settings')));
 
   if (name === 'aktuell') {
     const chatPanelActive = document.getElementById('aktuell-panel-chat').classList.contains('active');
@@ -2372,6 +2372,8 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
 
 document.getElementById('settings-admin-link').addEventListener('click', () => showScreen('admin'));
 document.getElementById('admin-back-btn').addEventListener('click', () => showScreen('settings'));
+document.getElementById('settings-birthdays-link').addEventListener('click', () => showScreen('birthdays'));
+document.getElementById('birthdays-back-btn').addEventListener('click', () => showScreen('settings'));
 
 // Home order
 function subscribeHomeOrder() {

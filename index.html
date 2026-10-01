@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 
@@ -205,6 +205,8 @@
           <span class="switch-track"></span>
         </label>
       </div>
+      <button class="btn btn-secondary" id="settings-birthdays-link" style="margin-top:20px;">🎂 Geburtstage</button>
+
       <button class="btn btn-ghost" id="logout-btn" style="margin-top:20px;">Anderen Namen verwenden</button>
 
       <button class="btn btn-secondary" id="settings-admin-link" style="margin-top:12px;display:none;">🛠️ Admin-Bereich öffnen</button>
@@ -223,7 +225,6 @@
         <button class="tab-btn" data-tab="admin-order">Reihenfolge</button>
         <button class="tab-btn" data-tab="admin-sick">Krank</button>
         <button class="tab-btn" data-tab="admin-wichtig">Wichtig</button>
-        <button class="tab-btn" data-tab="admin-birthdays">Geburtstage</button>
       </div>
 
       <div class="tab-panel" id="admin-backup">
@@ -290,19 +291,25 @@
         <button class="btn btn-primary" id="important-save-btn" style="margin-top:10px;">Speichern</button>
       </div>
 
-      <div class="tab-panel" id="admin-birthdays">
-        <div class="section-note">Geburtstage werden automatisch jedes Jahr am richtigen Tag in den Kalender übertragen (hellblau). "Original" = der echte Geburtstag, dann wird im Kalender auch das Alter angezeigt. Ohne Haken erscheint nur der Name ohne Altersangabe.</div>
-        <div id="admin-birthday-list"></div>
-        <div class="add-bar" style="margin-bottom:6px;">
-          <input type="text" id="birthday-name-input" placeholder="Name...">
-        </div>
-        <div class="add-bar">
-          <input type="date" id="birthday-date-input">
-          <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;white-space:nowrap;color:var(--text-muted);">
-            <input type="checkbox" id="birthday-original-input" style="width:auto;"> Original
-          </label>
-          <button class="btn btn-primary btn-small" id="birthday-add-btn">+</button>
-        </div>
+    </section>
+
+    <!-- ---------- Geburtstage (eigener Bereich, für alle) ---------- -->
+    <section class="screen" id="screen-birthdays" data-screen="birthdays">
+      <div class="screen-header">
+        <h1>🎂 Geburtstage</h1>
+        <button class="btn-icon" id="birthdays-back-btn" title="Zurück">←</button>
+      </div>
+      <div class="section-note">Geburtstage werden automatisch jedes Jahr am richtigen Tag in den Kalender übertragen (hellblau). "Original" = der echte Geburtstag, dann wird im Kalender auch das Alter angezeigt. Ohne Haken erscheint nur der Name ohne Altersangabe.</div>
+      <div id="admin-birthday-list"></div>
+      <div class="add-bar" style="margin-bottom:6px;">
+        <input type="text" id="birthday-name-input" placeholder="Name...">
+      </div>
+      <div class="add-bar">
+        <input type="date" id="birthday-date-input">
+        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;white-space:nowrap;color:var(--text-muted);">
+          <input type="checkbox" id="birthday-original-input" style="width:auto;"> Original
+        </label>
+        <button class="btn btn-primary btn-small" id="birthday-add-btn">+</button>
       </div>
     </section>
 
@@ -331,6 +338,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>
