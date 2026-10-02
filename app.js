@@ -1364,7 +1364,9 @@ function renderMonthCalendar() {
       if (o.isSpanning && !o.allDay) label = '↔ ' + label;
       else if (!o.allDay && !o.isSpanning) label = `${o.time || ''} ${label}`;
       const tooltip = o.notes ? `${label} — ${o.notes}` : label;
-      const clickAttrs = (o.isHoliday || o.isFerien || o.isBirthday) ? '' : `data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}"`;
+      const clickAttrs = (o.isHoliday || o.isFerien)
+        ? ''
+        : (o.isBirthday ? `data-birthday-info="${escapeHtml(label)}"` : `data-appt-id="${o.apptId}" data-appt-date="${o.occurrenceStart}"`);
       const specialClass = o.isHoliday ? 'holiday' : (o.isFerien ? 'ferien' : (o.isBirthday ? 'birthday' : ''));
       return `<div class="appt-bar ${(o.allDay || o.isSpanning) ? 'allday' : ''} ${specialClass}" style="background:${bg}" ${clickAttrs} title="${escapeHtml(tooltip)}">${escapeHtml(label)}</div>`;
     }).join('');
@@ -1385,6 +1387,27 @@ function renderMonthCalendar() {
   grid.querySelectorAll('[data-cal-day]').forEach((cell) => {
     cell.addEventListener('click', () => safeOpenAppointmentModal(null, cell.dataset.calDay));
   });
+  grid.querySelectorAll('[data-birthday-info]').forEach((bar) => {
+    bar.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showInfoModal('🎂 Geburtstag', bar.dataset.birthdayInfo);
+    });
+  });
+}
+
+function showInfoModal(title, text) {
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal-box">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(text)}</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="info-modal-close-btn" style="width:100%;">OK</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById('info-modal-close-btn').addEventListener('click', () => { root.innerHTML = ''; });
 }
 
 document.getElementById('cal-prev-btn').addEventListener('click', () => {

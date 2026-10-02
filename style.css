@@ -296,7 +296,7 @@ a { color: inherit; }
 .appt-bar.allday { font-weight: 700; }
 .appt-bar.holiday { cursor: default; font-style: italic; }
 .appt-bar.ferien { cursor: default; font-style: italic; color: #3A1B2B; }
-.appt-bar.birthday { cursor: default; font-weight: 700; color: #16313D; }
+.appt-bar.birthday { font-weight: 700; color: #16313D; }
 
 /* ---------- Geburtstags-Konfetti ---------- */
 .confetti-container { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 70; }
