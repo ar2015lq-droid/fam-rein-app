@@ -304,6 +304,7 @@ a { color: inherit; }
   position: absolute; top: -20px; width: 8px; height: 14px; opacity: 0.9; border-radius: 2px;
   animation-name: confetti-fall; animation-timing-function: ease-in; animation-fill-mode: forwards;
 }
+.confetti-piece.confetti-emoji { width: auto; height: auto; background: none; border-radius: 0; line-height: 1; opacity: 1; }
 @keyframes confetti-fall {
   0% { transform: translateY(0) rotate(0deg); opacity: 1; }
   100% { transform: translateY(110vh) rotate(360deg); opacity: 0.85; }
@@ -376,6 +377,13 @@ a { color: inherit; }
 }
 .cal-cell.today { border-color: var(--accent-gold); font-weight: 700; }
 .cal-cell.sick { background: var(--accent-coral); color: #fff; font-weight: 700; }
+.cal-cell.trained { background: var(--accent-green); color: #fff; font-weight: 700; }
+
+/* ---------- Gym: Statistik unter dem Kalender ---------- */
+.gym-stats { margin-top: 12px; font-size: 0.9rem; line-height: 1.7; }
+.gym-stats .gym-num { font-weight: 700; }
+.gym-stats .gym-num.bad { color: var(--accent-red); }
+.gym-stats .gym-num.good { color: var(--accent-green); }
 .cal-cell.empty { background: transparent; cursor: default; }
 
 /* ---------- Lists (shopping / tasks) ---------- */

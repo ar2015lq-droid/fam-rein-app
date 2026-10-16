@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
 
@@ -149,6 +149,7 @@
       <div class="tabs tab-group" id="aktuell-tab-group">
         <button class="tab-btn active" data-tab="aktuell-panel-chat">💬 Chat</button>
         <button class="tab-btn" data-tab="aktuell-panel-kalender" data-track-visit="kalender">📅 Kalender</button>
+        <button class="tab-btn" data-tab="aktuell-panel-gym" id="gym-tab-btn" style="display:none;">🏋️ Gym</button>
       </div>
 
       <div class="tab-panel active" id="aktuell-panel-chat">
@@ -172,6 +173,10 @@
           <div class="month-cal-grid" id="month-cal-grid"></div>
         </div>
         <button class="btn btn-primary" id="add-appointment-btn" onclick="window.handleAddAppointmentClick && window.handleAddAppointmentClick()" style="margin-top:16px;">+ Termin hinzufügen</button>
+      </div>
+
+      <div class="tab-panel" id="aktuell-panel-gym">
+        <div id="gym-calendars"></div>
       </div>
     </section>
 
@@ -226,6 +231,14 @@
           <div class="item-order-controls">
             <button class="btn-icon" data-move-setting-up="admin">↑</button>
             <button class="btn-icon" data-move-setting-down="admin">↓</button>
+          </div>
+        </div>
+
+        <div class="settings-item" id="settings-item-spezialkalender" data-order-key="spezialkalender" style="display:none;">
+          <button class="btn btn-secondary" id="settings-spezial-link" style="flex:1;margin:0;">🗓️ Spezial Kalender</button>
+          <div class="item-order-controls">
+            <button class="btn-icon" data-move-setting-up="spezialkalender">↑</button>
+            <button class="btn-icon" data-move-setting-down="spezialkalender">↓</button>
           </div>
         </div>
       </div>
@@ -332,6 +345,26 @@
       </div>
     </section>
 
+    <!-- ---------- Spezial Kalender (nur Alex) ---------- -->
+    <section class="screen" id="screen-spezial" data-screen="spezial">
+      <div class="screen-header">
+        <h1>🗓️ Spezial Kalender</h1>
+        <button class="btn-icon" id="spezial-back-btn" title="Zurück">←</button>
+      </div>
+
+      <h3 style="margin-bottom:8px;">🏋️ Gym</h3>
+      <div class="section-note">Wer darf den Reiter „Gym“ (unter „Aktuell“) sehen und benutzen? Du selbst siehst dort die Kalender aller freigegebenen Personen.</div>
+      <div id="spezial-gym-users"></div>
+
+      <div class="appt-form-group" style="margin-top:16px;">
+        <label>Zieltage pro Monat (1–31)</label>
+        <div class="appt-inline-row">
+          <input type="number" id="spezial-gym-target" min="1" max="31" step="1" placeholder="z.B. 12" style="flex:1;min-width:0;">
+          <button class="btn btn-primary btn-small" id="spezial-gym-target-save">Speichern</button>
+        </div>
+      </div>
+    </section>
+
     <!-- ---------- Bottom Nav ---------- -->
     <nav id="bottom-nav">
       <button class="nav-btn" data-target="home"><span class="nav-icon">🏠</span>Start</button>
@@ -357,6 +390,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=15"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>

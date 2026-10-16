@@ -105,6 +105,8 @@ function subscribeUsers() {
       renderHomeSickToday();
       renderHomeSickStats();
       if (isAdmin(currentUser.name)) renderAdminSickCalendars();
+      renderGym();
+      renderSpezialKalender();
       subscribeAllTransactions();
     }
     tryResolveLogin();
@@ -190,6 +192,7 @@ function loginAs(userData) {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
   document.getElementById('settings-item-admin').style.display = isAdmin(currentUser.name) ? '' : 'none';
+  document.getElementById('settings-item-spezialkalender').style.display = isAdmin(currentUser.name) ? '' : 'none';
   startAppListeners();
   showScreen('home');
 }
@@ -288,7 +291,7 @@ document.getElementById('darkmode-toggle').addEventListener('change', (e) => {
 function showScreen(name) {
   currentScreen = name;
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.dataset.screen === name));
-  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays') && b.dataset.target === 'settings')));
+  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays' || name === 'spezial') && b.dataset.target === 'settings')));
 
   if (name === 'home') {
     maybeShowBirthdayConfetti();
@@ -301,6 +304,9 @@ function showScreen(name) {
       markMenuVisited('chat');
     }
     renderMonthCalendar();
+    if (document.getElementById('aktuell-panel-gym').classList.contains('active')) {
+      onGymTabOpened();
+    }
   }
   if (name === 'ideen') {
     markIdeasSeen();
@@ -2062,6 +2068,252 @@ document.getElementById('birthday-add-btn').addEventListener('click', () => {
 });
 
 // ==========================================================
+// GYM (Spezial Kalender) — Trainingstage pro Nutzer
+// Alex legt fest, wer den Reiter sieht + die Zieltage pro Monat.
+// Jeder sieht nur seinen eigenen Kalender, Alex alle freigegebenen.
+// ==========================================================
+
+let gymSettings = { allowedUsers: [], targetDays: null };
+let gymDaysMap = {};     // lowercase username -> array of 'YYYY-MM-DD'
+let gymMonthState = {};  // lowercase username -> { year, month }
+
+function subscribeGymSettings() {
+  return db.collection('config').doc('gymSettings').onSnapshot((doc) => {
+    const data = doc.exists ? doc.data() : {};
+    gymSettings = {
+      allowedUsers: Array.isArray(data.allowedUsers) ? data.allowedUsers : [],
+      targetDays: Number.isInteger(data.targetDays) ? data.targetDays : null
+    };
+    updateGymVisibility();
+    renderGym();
+    renderSpezialKalender();
+  });
+}
+
+function subscribeGymDays() {
+  return db.collection('gymDays').onSnapshot((snap) => {
+    const map = {};
+    snap.forEach((doc) => { map[doc.id.toLowerCase()] = doc.data().dates || []; });
+    gymDaysMap = map;
+    renderGym();
+  });
+}
+
+function gymAllowedLower() {
+  return (gymSettings.allowedUsers || []).map((n) => n.toLowerCase());
+}
+
+// Der Reiter ist für alle versteckt, bis jemand freigegeben ist.
+// Sichtbar für freigegebene Nutzer – und für Alex, sobald mindestens eine Person freigegeben ist.
+function gymAccessForCurrentUser() {
+  if (!currentUser) return false;
+  const allowed = gymAllowedLower();
+  return allowed.includes(currentUser.name.toLowerCase()) || (isAdmin(currentUser.name) && allowed.length > 0);
+}
+
+function updateGymVisibility() {
+  const btn = document.getElementById('gym-tab-btn');
+  if (!btn) return;
+  const hasAccess = gymAccessForCurrentUser();
+  btn.style.display = hasAccess ? '' : 'none';
+  if (!hasAccess && document.getElementById('aktuell-panel-gym').classList.contains('active')) {
+    document.querySelector('[data-tab="aktuell-panel-chat"]').click();
+  }
+}
+
+function gymVisibleUsers() {
+  const allowed = gymAllowedLower();
+  let users = Object.values(usersMap).filter((u) => allowed.includes(u.name.toLowerCase()));
+  if (!isAdmin(currentUser.name)) {
+    users = users.filter((u) => u.name.toLowerCase() === currentUser.name.toLowerCase());
+  }
+  return users.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function gymCountForMonth(dates, year, month) {
+  const prefix = `${year}-${String(month + 1).padStart(2, '0')}-`;
+  return dates.filter((d) => d.startsWith(prefix)).length;
+}
+
+function buildGymGridHtml(userName, year, month, dateSet) {
+  const firstDay = new Date(year, month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = todayStr();
+
+  let cells = WEEKDAY_LABELS_DE.map((d) => `<div class="cal-weekday">${d}</div>`).join('');
+  for (let i = 0; i < startOffset; i++) cells += `<div class="cal-cell empty"></div>`;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const trained = dateSet.has(dateStr);
+    const isToday = dateStr === today;
+    cells += `<div class="cal-cell ${trained ? 'trained' : ''} ${isToday ? 'today' : ''}" data-gym-day="${dateStr}" data-gym-user="${escapeHtml(userName)}">${day}</div>`;
+  }
+  return `<div class="cal-grid-wrap"><div class="cal-grid">${cells}</div></div>`;
+}
+
+function renderGym() {
+  const el = document.getElementById('gym-calendars');
+  if (!el || !currentUser) return;
+  const users = gymVisibleUsers();
+  if (!users.length) {
+    el.innerHTML = `<div class="empty-state"><span class="emoji">🏋️</span>Noch kein Kalender freigegeben.</div>`;
+    return;
+  }
+  const target = gymSettings.targetDays;
+
+  el.innerHTML = users.map((u) => {
+    const key = u.name.toLowerCase();
+    if (!gymMonthState[key]) {
+      const now = new Date();
+      gymMonthState[key] = { year: now.getFullYear(), month: now.getMonth() };
+    }
+    const { year, month } = gymMonthState[key];
+    const dates = gymDaysMap[key] || [];
+    const count = gymCountForMonth(dates, year, month);
+    const nameColor = userColor(u, 'color') || 'inherit';
+    const borderColor = userColor(u, 'border') || 'transparent';
+
+    let missingHtml = `<span class="gym-num">–</span>`;
+    if (target) {
+      const missing = target - count;
+      missingHtml = `<span class="gym-num ${missing > 0 ? 'bad' : 'good'}">${missing}</span>`;
+    }
+
+    return `
+      <div class="user-sick-card" style="border-color:${borderColor}">
+        <div class="cal-header">
+          <button class="cal-nav-btn" data-gym-prev="${escapeHtml(u.name)}">‹</button>
+          <span class="cal-title" style="color:${nameColor}">${escapeHtml(u.name)} — ${MONTH_LABELS_DE[month]} ${year}</span>
+          <button class="cal-nav-btn" data-gym-next="${escapeHtml(u.name)}">›</button>
+        </div>
+        ${buildGymGridHtml(u.name, year, month, new Set(dates))}
+        <div class="gym-stats">
+          <div>Zieltage: <strong>${target ? target : '–'}</strong></div>
+          <div>Trainingstage: <strong>${count}</strong></div>
+          <div>Fehlende Trainingstage: ${missingHtml}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-gym-prev]').forEach((btn) => {
+    btn.addEventListener('click', () => shiftGymMonth(btn.dataset.gymPrev, -1));
+  });
+  el.querySelectorAll('[data-gym-next]').forEach((btn) => {
+    btn.addEventListener('click', () => shiftGymMonth(btn.dataset.gymNext, 1));
+  });
+  el.querySelectorAll('[data-gym-day]').forEach((cell) => {
+    cell.addEventListener('click', () => toggleGymDay(cell.dataset.gymUser, cell.dataset.gymDay));
+  });
+}
+
+function shiftGymMonth(userName, delta) {
+  const key = userName.toLowerCase();
+  let { year, month } = gymMonthState[key];
+  month += delta;
+  if (month < 0) { month = 11; year -= 1; }
+  if (month > 11) { month = 0; year += 1; }
+  gymMonthState[key] = { year, month };
+  renderGym();
+}
+
+async function toggleGymDay(userName, dateStr) {
+  // Normale Nutzer dürfen nur ihren eigenen Kalender ändern, Alex alle sichtbaren.
+  if (!isAdmin(currentUser.name) && userName.toLowerCase() !== currentUser.name.toLowerCase()) return;
+  const ref = db.collection('gymDays').doc(userName);
+  const current = gymDaysMap[userName.toLowerCase()] || [];
+  try {
+    if (current.includes(dateStr)) await ref.set({ dates: FieldValue.arrayRemove(dateStr) }, { merge: true });
+    else await ref.set({ dates: FieldValue.arrayUnion(dateStr) }, { merge: true });
+  } catch (err) {
+    console.error(err);
+    toast('Fehler beim Speichern: ' + err.message);
+  }
+}
+
+// Beim Öffnen des Reiters: Ansicht auf den aktuellen Monat zurücksetzen, ggf. Hantel-Konfetti.
+function onGymTabOpened() {
+  gymMonthState = {};
+  renderGym();
+  checkGymConfetti();
+}
+
+function checkGymConfetti() {
+  const target = gymSettings.targetDays;
+  if (!target) return;
+  const now = new Date();
+  const reached = gymVisibleUsers().some((u) => {
+    const count = gymCountForMonth(gymDaysMap[u.name.toLowerCase()] || [], now.getFullYear(), now.getMonth());
+    return (target - count) <= 0;
+  });
+  if (reached) launchEmojiConfetti('🏋️', 40);
+}
+
+function launchEmojiConfetti(emoji, count) {
+  const container = document.createElement('div');
+  container.className = 'confetti-container';
+  document.body.appendChild(container);
+  for (let i = 0; i < count; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece confetti-emoji';
+    piece.textContent = emoji;
+    piece.style.left = Math.random() * 95 + 'vw';
+    piece.style.fontSize = (18 + Math.random() * 16) + 'px';
+    piece.style.animationDelay = (Math.random() * 0.8) + 's';
+    piece.style.animationDuration = (2.8 + Math.random() * 1.6) + 's';
+    container.appendChild(piece);
+  }
+  setTimeout(() => container.remove(), 5500);
+}
+
+// ---------- Spezial Kalender (Einstellungen, nur Alex) ----------
+function renderSpezialKalender() {
+  const listEl = document.getElementById('spezial-gym-users');
+  const targetInput = document.getElementById('spezial-gym-target');
+  if (!listEl || !targetInput) return;
+
+  const allowed = gymAllowedLower();
+  const users = Object.values(usersMap).sort((a, b) => a.name.localeCompare(b.name));
+  listEl.innerHTML = users.map((u) => {
+    const color = userColor(u, 'color');
+    return `
+      <div class="custom-share-row">
+        <label style="${color ? `color:${color};font-weight:600;` : ''}">${escapeHtml(u.name)}</label>
+        <input type="checkbox" data-gym-allow="${escapeHtml(u.name)}" ${allowed.includes(u.name.toLowerCase()) ? 'checked' : ''}>
+      </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('[data-gym-allow]').forEach((cb) => {
+    cb.addEventListener('change', (e) => {
+      const name = cb.dataset.gymAllow;
+      const ref = db.collection('config').doc('gymSettings');
+      const op = e.target.checked ? FieldValue.arrayUnion(name) : FieldValue.arrayRemove(name);
+      ref.set({ allowedUsers: op }, { merge: true });
+    });
+  });
+
+  if (document.activeElement !== targetInput) {
+    targetInput.value = gymSettings.targetDays ? gymSettings.targetDays : '';
+  }
+}
+
+document.getElementById('spezial-gym-target-save').addEventListener('click', async () => {
+  const input = document.getElementById('spezial-gym-target');
+  const value = parseInt(input.value, 10);
+  if (!Number.isInteger(value) || value < 1 || value > 31) {
+    toast('Bitte eine Zahl zwischen 1 und 31 eingeben.');
+    return;
+  }
+  try {
+    await db.collection('config').doc('gymSettings').set({ targetDays: value }, { merge: true });
+    toast('Zieltage gespeichert.');
+  } catch (err) {
+    console.error(err);
+    toast('Fehler beim Speichern: ' + err.message);
+  }
+});
+
+// ==========================================================
 // KRANK (sick days) — Admin manages, shown on Startseite
 // ==========================================================
 
@@ -2369,14 +2621,14 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
     }
 
     data.config = {};
-    for (const docId of ['important', 'homeOrder', 'sickSettings', 'sickCalendarOrder']) {
+    for (const docId of ['important', 'homeOrder', 'sickSettings', 'sickCalendarOrder', 'gymSettings', 'settingsOrder']) {
       const docSnap = await db.collection('config').doc(docId).get();
       data.config[docId] = docSnap.exists ? sanitizeForExport(docSnap.data()) : null;
     }
@@ -2433,10 +2685,13 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     if (btn.dataset.tab === 'aktuell-panel-kalender') {
       renderMonthCalendar();
     }
+    if (btn.dataset.tab === 'aktuell-panel-gym') {
+      onGymTabOpened();
+    }
   });
 });
 
-const DEFAULT_SETTINGS_ORDER = ['darkmode', 'geburtstage', 'admin'];
+const DEFAULT_SETTINGS_ORDER = ['darkmode', 'geburtstage', 'admin', 'spezialkalender'];
 let settingsOrder = DEFAULT_SETTINGS_ORDER.slice();
 
 function subscribeSettingsOrder() {
@@ -2485,6 +2740,8 @@ document.getElementById('settings-admin-link').addEventListener('click', () => s
 document.getElementById('admin-back-btn').addEventListener('click', () => showScreen('settings'));
 document.getElementById('settings-birthdays-link').addEventListener('click', () => showScreen('birthdays'));
 document.getElementById('birthdays-back-btn').addEventListener('click', () => showScreen('settings'));
+document.getElementById('settings-spezial-link').addEventListener('click', () => showScreen('spezial'));
+document.getElementById('spezial-back-btn').addEventListener('click', () => showScreen('settings'));
 
 // Home order
 function subscribeHomeOrder() {
@@ -2551,6 +2808,8 @@ function startAppListeners() {
   unsubscribers.push(subscribeHomeOrder());
   unsubscribers.push(subscribeBirthdays());
   unsubscribers.push(subscribeSettingsOrder());
+  unsubscribers.push(subscribeGymSettings());
+  unsubscribers.push(subscribeGymDays());
   unsubscribers.push(subscribeSickDays());
   unsubscribers.push(subscribeSickSettings());
   unsubscribers.push(subscribeSickCalendarOrder());
