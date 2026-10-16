@@ -2073,7 +2073,7 @@ document.getElementById('birthday-add-btn').addEventListener('click', () => {
 // Jeder sieht nur seinen eigenen Kalender, Alex alle freigegebenen.
 // ==========================================================
 
-let gymSettings = { allowedUsers: [], targetDays: null };
+let gymSettings = { allowedUsers: [], targets: {} }; // targets: lowercase username -> Zieltage (1-31)
 let gymDaysMap = {};     // lowercase username -> array of 'YYYY-MM-DD'
 let gymMonthState = {};  // lowercase username -> { year, month }
 
@@ -2082,7 +2082,7 @@ function subscribeGymSettings() {
     const data = doc.exists ? doc.data() : {};
     gymSettings = {
       allowedUsers: Array.isArray(data.allowedUsers) ? data.allowedUsers : [],
-      targetDays: Number.isInteger(data.targetDays) ? data.targetDays : null
+      targets: (data.targets && typeof data.targets === 'object') ? data.targets : {}
     };
     updateGymVisibility();
     renderGym();
@@ -2130,6 +2130,11 @@ function gymVisibleUsers() {
   return users.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function gymTargetFor(user) {
+  const t = (gymSettings.targets || {})[user.name.toLowerCase()];
+  return Number.isInteger(t) ? t : null;
+}
+
 function gymCountForMonth(dates, year, month) {
   const prefix = `${year}-${String(month + 1).padStart(2, '0')}-`;
   return dates.filter((d) => d.startsWith(prefix)).length;
@@ -2160,10 +2165,10 @@ function renderGym() {
     el.innerHTML = `<div class="empty-state"><span class="emoji">🏋️</span>Noch kein Kalender freigegeben.</div>`;
     return;
   }
-  const target = gymSettings.targetDays;
 
   el.innerHTML = users.map((u) => {
     const key = u.name.toLowerCase();
+    const target = gymTargetFor(u);
     if (!gymMonthState[key]) {
       const now = new Date();
       gymMonthState[key] = { year: now.getFullYear(), month: now.getMonth() };
@@ -2239,10 +2244,10 @@ function onGymTabOpened() {
 }
 
 function checkGymConfetti() {
-  const target = gymSettings.targetDays;
-  if (!target) return;
   const now = new Date();
   const reached = gymVisibleUsers().some((u) => {
+    const target = gymTargetFor(u);
+    if (!target) return false;
     const count = gymCountForMonth(gymDaysMap[u.name.toLowerCase()] || [], now.getFullYear(), now.getMonth());
     return (target - count) <= 0;
   });
@@ -2269,17 +2274,31 @@ function launchEmojiConfetti(emoji, count) {
 // ---------- Spezial Kalender (Einstellungen, nur Alex) ----------
 function renderSpezialKalender() {
   const listEl = document.getElementById('spezial-gym-users');
-  const targetInput = document.getElementById('spezial-gym-target');
-  if (!listEl || !targetInput) return;
+  if (!listEl) return;
+
+  // Bereits eingetippte, noch nicht gespeicherte Werte beim Neuzeichnen nicht verlieren
+  const typed = {};
+  listEl.querySelectorAll('[data-gym-target]').forEach((inp) => { typed[inp.dataset.gymTarget] = inp.value; });
 
   const allowed = gymAllowedLower();
   const users = Object.values(usersMap).sort((a, b) => a.name.localeCompare(b.name));
   listEl.innerHTML = users.map((u) => {
     const color = userColor(u, 'color');
+    const stored = gymTargetFor(u);
+    const value = Object.prototype.hasOwnProperty.call(typed, u.name) ? typed[u.name] : (stored ? stored : '');
     return `
-      <div class="custom-share-row">
-        <label style="${color ? `color:${color};font-weight:600;` : ''}">${escapeHtml(u.name)}</label>
-        <input type="checkbox" data-gym-allow="${escapeHtml(u.name)}" ${allowed.includes(u.name.toLowerCase()) ? 'checked' : ''}>
+      <div class="gym-user-row">
+        <div class="gym-user-top">
+          <label style="${color ? `color:${color};font-weight:600;` : ''}">${escapeHtml(u.name)}</label>
+          <label class="gym-allow-label">Freigeben
+            <input type="checkbox" data-gym-allow="${escapeHtml(u.name)}" ${allowed.includes(u.name.toLowerCase()) ? 'checked' : ''}>
+          </label>
+        </div>
+        <div class="gym-user-target">
+          <label>Zieltage pro Monat</label>
+          <input type="number" min="1" max="31" step="1" placeholder="1–31" data-gym-target="${escapeHtml(u.name)}" value="${value}">
+          <button class="btn-icon" data-gym-target-save="${escapeHtml(u.name)}" title="Speichern">✓</button>
+        </div>
       </div>`;
   }).join('');
 
@@ -2292,26 +2311,39 @@ function renderSpezialKalender() {
     });
   });
 
-  if (document.activeElement !== targetInput) {
-    targetInput.value = gymSettings.targetDays ? gymSettings.targetDays : '';
-  }
+  listEl.querySelectorAll('[data-gym-target-save]').forEach((btn) => {
+    btn.addEventListener('click', () => saveGymTarget(btn.dataset.gymTargetSave));
+  });
+  listEl.querySelectorAll('[data-gym-target]').forEach((inp) => {
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveGymTarget(inp.dataset.gymTarget); });
+  });
 }
 
-document.getElementById('spezial-gym-target-save').addEventListener('click', async () => {
-  const input = document.getElementById('spezial-gym-target');
-  const value = parseInt(input.value, 10);
-  if (!Number.isInteger(value) || value < 1 || value > 31) {
-    toast('Bitte eine Zahl zwischen 1 und 31 eingeben.');
-    return;
-  }
+async function saveGymTarget(userName) {
+  const input = document.querySelector(`[data-gym-target="${CSS.escape(userName)}"]`);
+  if (!input) return;
+  const raw = input.value.trim();
+  const key = userName.toLowerCase();
+  const ref = db.collection('config').doc('gymSettings');
   try {
-    await db.collection('config').doc('gymSettings').set({ targetDays: value }, { merge: true });
-    toast('Zieltage gespeichert.');
+    if (raw === '') {
+      // Feld leer = Zieltage für diese Person wieder entfernen
+      await ref.set({ targets: { [key]: FieldValue.delete() } }, { merge: true });
+      toast(`Zieltage für ${userName} entfernt.`);
+      return;
+    }
+    const value = parseInt(raw, 10);
+    if (!Number.isInteger(value) || value < 1 || value > 31) {
+      toast('Bitte eine Zahl zwischen 1 und 31 eingeben.');
+      return;
+    }
+    await ref.set({ targets: { [key]: value } }, { merge: true });
+    toast(`Zieltage für ${userName} gespeichert.`);
   } catch (err) {
     console.error(err);
     toast('Fehler beim Speichern: ' + err.message);
   }
-});
+}
 
 // ==========================================================
 // KRANK (sick days) — Admin manages, shown on Startseite

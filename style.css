@@ -379,6 +379,14 @@ a { color: inherit; }
 .cal-cell.sick { background: var(--accent-coral); color: #fff; font-weight: 700; }
 .cal-cell.trained { background: var(--accent-green); color: #fff; font-weight: 700; }
 
+/* ---------- Spezial Kalender: eine Zeile pro Person ---------- */
+.gym-user-row { background: var(--surface); border-radius: var(--radius-s); padding: 10px 12px; margin-bottom: 8px; box-shadow: var(--shadow-soft); }
+.gym-user-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.gym-allow-label { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-muted); }
+.gym-user-target { display: flex; align-items: center; gap: 8px; }
+.gym-user-target label { font-size: 0.8rem; color: var(--text-muted); white-space: nowrap; }
+.gym-user-target input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); }
+
 /* ---------- Gym: Statistik unter dem Kalender ---------- */
 .gym-stats { margin-top: 12px; font-size: 0.9rem; line-height: 1.7; }
 .gym-stats .gym-num { font-weight: 700; }
