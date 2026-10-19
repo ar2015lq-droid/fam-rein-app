@@ -434,6 +434,24 @@ a { color: inherit; }
 @keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
 .c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
+/* ---------- Schach: Spielbrett ---------- */
+.ch-board { display: grid; grid-template-columns: repeat(8, 1fr); max-width: 420px; margin: 0 auto; border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-soft); }
+.ch-sq { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.ch-sq.light { background: #AEBBC0; }
+.ch-sq.dark { background: #6B7F87; }
+.ch-sq.last { box-shadow: inset 0 0 0 100px rgba(255, 221, 87, 0.38); }
+.ch-sq.check { box-shadow: inset 0 0 0 100px rgba(220, 60, 60, 0.55); }
+.ch-sq.sel { box-shadow: inset 0 0 0 100px rgba(80, 200, 120, 0.45); }
+.ch-sq.dot::after { content: ''; position: absolute; width: 28%; height: 28%; border-radius: 50%; background: rgba(0, 0, 0, 0.38); }
+.ch-sq.cap::after { content: ''; position: absolute; inset: 6%; border-radius: 50%; border: 4px solid rgba(0, 0, 0, 0.38); }
+.ch-piece {
+  position: relative; z-index: 1; line-height: 1; font-size: min(8.6vw, 40px);
+  -webkit-text-stroke: 1.4px rgba(0, 0, 0, 0.6); paint-order: stroke fill; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.ch-side { color: var(--text-muted); font-size: 0.7rem; margin-left: 2px; }
+.ch-promo { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.ch-banner { text-align: center; margin: 14px auto 0; max-width: 420px; background: var(--surface); border-radius: var(--radius-s); padding: 10px 12px; box-shadow: var(--shadow-soft); font-size: 0.92rem; }
+
 /* ---------- Spezial Kalender: eine Zeile pro Person ---------- */
 .gym-user-row { background: var(--surface); border-radius: var(--radius-s); padding: 10px 12px; margin-bottom: 8px; box-shadow: var(--shadow-soft); }
 .gym-user-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }

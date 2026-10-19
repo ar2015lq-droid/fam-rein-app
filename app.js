@@ -321,9 +321,7 @@ function showScreen(name) {
   }
 
   if (name === 'games') {
-    gamesView = 'menu';
-    openGameId = null;
-    lastBoardSig = '';
+    resetGamesView();
     renderGames();
   }
   updateGamesBadge();
@@ -2081,29 +2079,88 @@ document.getElementById('birthday-add-btn').addEventListener('click', () => {
 });
 
 // ==========================================================
-// SPIELE — 4 Gewinnt: Herausforderung, Zugspiel, Siegestabelle
-// Pro Spielerpaar gibt es immer nur EINE Partie (feste Dokument-ID).
+// SPIELE — 4 Gewinnt und Schach: Herausforderung, Zugspiel, Siegestabellen
+// Pro Spielerpaar gibt es pro Spiel immer nur EINE Partie (feste Dokument-ID).
 // ==========================================================
 // <GAMES-START>
 
 const C4_COLS = 7;
 const C4_ROWS = 6;
-const C4_STALE_INVITE_DAYS = 14;
-const C4_FINISHED_KEEP_DAYS = 7;
-const C4_GAME_LABEL = '4 Gewinnt';
+const GAME_STALE_INVITE_DAYS = 14;
+const GAME_FINISHED_KEEP_DAYS = 7;
+const GAME_TYPES = {
+  connect4: { label: '4 Gewinnt', icon: '🔴', subtitle: 'Zu zweit, abwechselnd Steine einwerfen' },
+  chess: { label: 'Schach', icon: '♟️', subtitle: 'Der Klassiker – mit Remis-Angebot' }
+};
 
-let gamesRaw = [];                                   // alle Partien, an denen ich beteiligt bin
-let gameStats = { wins: {}, draws: {}, lastWin: null };
+let gamesRaw = [];                                   // alle Partien (alle Spiele), an denen ich beteiligt bin
+let gameStatsAll = {
+  connect4: { wins: {}, draws: {}, lastWin: null },
+  chess: { wins: {}, draws: {}, lastWin: null }
+};
 let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
+let gamesType = 'connect4';                          // welches Spiel in der Übersicht gezeigt wird
 let openGameId = null;
 let lastBoardSig = '';
 let c4AnimKey = '';
-let c4Busy = false;
-let c4OpenAfterAccept = null;
+let gameBusy = false;
+let gameOpenAfterAccept = null;
+let chSel = null;                                    // Schach: { gameId, moves, from, promoTo }
 
-// <C4-LOGIC-START>
+// <GAMES-LOGIC-START>
 
-// ----- reine Spiellogik (Index = Reihe * 7 + Spalte, Reihe 0 = oben) -----
+// ----- allgemeine Hilfen für alle Spiele -----
+function gameTypeOf(g) {
+  return g.type || 'connect4';                       // ältere Partien haben (noch) kein Typ-Feld
+}
+
+function gamePairKey(a, b) {
+  return [a.toLowerCase(), b.toLowerCase()].sort().join('|');
+}
+
+function gameDocId(type, a, b) {
+  const prefix = type === 'connect4' ? 'c4' : type;  // "c4_" bleibt wie bisher, damit laufende Partien erhalten bleiben
+  return prefix + '_' + gamePairKey(a, b).split('|').map(encodeURIComponent).join('__');
+}
+
+function gamePlayerIndex(game, name) {
+  return (game.players || []).findIndex((n) => n.toLowerCase() === name.toLowerCase());
+}
+
+// ----- Farben der Spielfiguren (Nutzerfarben, bei zu großer Ähnlichkeit wird Spieler 2 angepasst) -----
+function hexToRgb(hex) {
+  if (typeof hex !== 'string') return null;
+  let h = hex.trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+function colorDistance(a, b) {
+  const ra = hexToRgb(a);
+  const rb = hexToRgb(b);
+  if (!ra || !rb) return 999;
+  return Math.sqrt(ra.reduce((sum, v, i) => sum + (v - rb[i]) ** 2, 0));
+}
+
+function invertColor(hex) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return '#888888';
+  return '#' + rgb.map((v) => (255 - v).toString(16).padStart(2, '0')).join('');
+}
+
+function gameStoneStyles(game) {
+  const users = game.players.map((n) => usersMap[n.toLowerCase()]);
+  const defaults = ['#E3A857', '#74AFC6'];
+  const fills = users.map((u, i) => (u && userColor(u, 'color')) || defaults[i]);
+  const rings = users.map((u, i) => (u && userColor(u, 'border')) || fills[i]);
+  if (colorDistance(fills[0], fills[1]) < 90) {
+    fills[1] = colorDistance(fills[0], rings[1]) >= 90 ? rings[1] : invertColor(fills[0]);
+  }
+  return [{ fill: fills[0], ring: rings[0] }, { fill: fills[1], ring: rings[1] }];
+}
+
+// ----- 4 Gewinnt: reine Spiellogik (Index = Reihe * 7 + Spalte, Reihe 0 = oben) -----
 function c4NewBoard() {
   return new Array(C4_COLS * C4_ROWS).fill(0);
 }
@@ -2140,55 +2197,225 @@ function c4IsFull(board) {
   return board.every((v) => v !== 0);
 }
 
-function c4PairKey(a, b) {
-  return [a.toLowerCase(), b.toLowerCase()].sort().join('|');
+// ----- Schach: reine Spiellogik -----
+// Brett = 64 Felder, Index = Reihe * 8 + Spalte, Reihe 0 = 8. Reihe (Schwarz oben), Spalte 0 = a-Linie.
+// Figuren wie in der FEN-Schreibweise: Großbuchstaben = Weiß (Spieler 1), Kleinbuchstaben = Schwarz (Spieler 2),
+// '' = leeres Feld. Rochaderechte als Text wie "KQkq", "en passant"-Feld als Index (oder -1).
+const CH_KNIGHT = [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]];
+const CH_KING = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+const CH_DIAG = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+const CH_STRAIGHT = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+
+function chIsWhite(p) {
+  return p !== '' && p === p.toUpperCase();
 }
 
-function c4GameId(a, b) {
-  return 'c4_' + c4PairKey(a, b).split('|').map(encodeURIComponent).join('__');
-}
-
-function c4PlayerIndex(game, name) {
-  return (game.players || []).findIndex((n) => n.toLowerCase() === name.toLowerCase());
-}
-
-// ----- Farben der Steine (Nutzerfarben, bei zu großer Ähnlichkeit wird Spieler 2 angepasst) -----
-function hexToRgb(hex) {
-  if (typeof hex !== 'string') return null;
-  let h = hex.trim().replace('#', '');
-  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
-  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
-  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-}
-
-function colorDistance(a, b) {
-  const ra = hexToRgb(a);
-  const rb = hexToRgb(b);
-  if (!ra || !rb) return 999;
-  return Math.sqrt(ra.reduce((sum, v, i) => sum + (v - rb[i]) ** 2, 0));
-}
-
-function invertColor(hex) {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return '#888888';
-  return '#' + rgb.map((v) => (255 - v).toString(16).padStart(2, '0')).join('');
-}
-
-function c4StoneStyles(game) {
-  const users = game.players.map((n) => usersMap[n.toLowerCase()]);
-  const defaults = ['#E3A857', '#74AFC6'];
-  const fills = users.map((u, i) => (u && userColor(u, 'color')) || defaults[i]);
-  const rings = users.map((u, i) => (u && userColor(u, 'border')) || fills[i]);
-  if (colorDistance(fills[0], fills[1]) < 90) {
-    fills[1] = colorDistance(fills[0], rings[1]) >= 90 ? rings[1] : invertColor(fills[0]);
+function chNewBoard() {
+  const back = ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'];
+  const board = new Array(64).fill('');
+  for (let c = 0; c < 8; c++) {
+    board[c] = back[c];
+    board[8 + c] = 'p';
+    board[48 + c] = 'P';
+    board[56 + c] = back[c].toUpperCase();
   }
-  return [{ fill: fills[0], ring: rings[0] }, { fill: fills[1], ring: rings[1] }];
+  return board;
+}
+
+function chNewState() {
+  return { board: chNewBoard(), turn: 1, castling: 'KQkq', ep: -1 };
+}
+
+// Wird das Feld sq von einer Figur der angegebenen Farbe angegriffen?
+function chAttacked(board, sq, byWhite) {
+  const row = sq >> 3;
+  const col = sq & 7;
+  const at = (r, c) => (r >= 0 && r < 8 && c >= 0 && c < 8 ? board[r * 8 + c] : null);
+  const pawn = byWhite ? 'P' : 'p';
+  const pr = byWhite ? row + 1 : row - 1;
+  if (at(pr, col - 1) === pawn || at(pr, col + 1) === pawn) return true;
+  const knight = byWhite ? 'N' : 'n';
+  for (const [dr, dc] of CH_KNIGHT) if (at(row + dr, col + dc) === knight) return true;
+  const king = byWhite ? 'K' : 'k';
+  for (const [dr, dc] of CH_KING) if (at(row + dr, col + dc) === king) return true;
+  const bishop = byWhite ? 'B' : 'b';
+  const rook = byWhite ? 'R' : 'r';
+  const queen = byWhite ? 'Q' : 'q';
+  for (const [dr, dc] of CH_DIAG) {
+    let r = row + dr;
+    let c = col + dc;
+    while (at(r, c) === '') { r += dr; c += dc; }
+    const p = at(r, c);
+    if (p === bishop || p === queen) return true;
+  }
+  for (const [dr, dc] of CH_STRAIGHT) {
+    let r = row + dr;
+    let c = col + dc;
+    while (at(r, c) === '') { r += dr; c += dc; }
+    const p = at(r, c);
+    if (p === rook || p === queen) return true;
+  }
+  return false;
+}
+
+function chKingSquare(board, white) {
+  return board.indexOf(white ? 'K' : 'k');
+}
+
+function chInCheck(board, white) {
+  const k = chKingSquare(board, white);
+  return k >= 0 && chAttacked(board, k, !white);
+}
+
+// Alle Züge, die nach den Bewegungsregeln möglich sind (der eigene König darf dabei noch im Schach stehen).
+function chPseudoMoves(state) {
+  const { board, castling, ep } = state;
+  const white = state.turn === 1;
+  const moves = [];
+  const PROMOS = ['q', 'r', 'b', 'n'];
+  for (let from = 0; from < 64; from++) {
+    const p = board[from];
+    if (p === '' || chIsWhite(p) !== white) continue;
+    const row = from >> 3;
+    const col = from & 7;
+    const type = p.toLowerCase();
+
+    if (type === 'p') {
+      const dir = white ? -1 : 1;
+      const startRow = white ? 6 : 1;
+      const lastRow = white ? 0 : 7;
+      const r1 = row + dir;
+      if (r1 < 0 || r1 > 7) continue;
+      const push = (to, flag) => {
+        if (r1 === lastRow) PROMOS.forEach((promo) => moves.push({ from, to, promo }));
+        else moves.push(flag ? { from, to, flag } : { from, to });
+      };
+      if (board[r1 * 8 + col] === '') {
+        push(r1 * 8 + col);
+        if (row === startRow && board[(row + 2 * dir) * 8 + col] === '') {
+          moves.push({ from, to: (row + 2 * dir) * 8 + col, flag: 'double' });
+        }
+      }
+      for (const dc of [-1, 1]) {
+        const c2 = col + dc;
+        if (c2 < 0 || c2 > 7) continue;
+        const to = r1 * 8 + c2;
+        const target = board[to];
+        if (target !== '' && chIsWhite(target) !== white) push(to);
+        else if (target === '' && to === ep) moves.push({ from, to, flag: 'ep' });
+      }
+    } else if (type === 'n' || type === 'k') {
+      for (const [dr, dc] of (type === 'n' ? CH_KNIGHT : CH_KING)) {
+        const r = row + dr;
+        const c = col + dc;
+        if (r < 0 || r > 7 || c < 0 || c > 7) continue;
+        const target = board[r * 8 + c];
+        if (target === '' || chIsWhite(target) !== white) moves.push({ from, to: r * 8 + c });
+      }
+      if (type === 'k' && from === (white ? 60 : 4)) {
+        const base = white ? 56 : 0;
+        const rook = white ? 'R' : 'r';
+        const enemyWhite = !white;
+        if (castling.includes(white ? 'K' : 'k') && board[base + 5] === '' && board[base + 6] === '' && board[base + 7] === rook
+          && !chAttacked(board, base + 4, enemyWhite) && !chAttacked(board, base + 5, enemyWhite) && !chAttacked(board, base + 6, enemyWhite)) {
+          moves.push({ from, to: base + 6, flag: 'castleK' });
+        }
+        if (castling.includes(white ? 'Q' : 'q') && board[base + 1] === '' && board[base + 2] === '' && board[base + 3] === '' && board[base] === rook
+          && !chAttacked(board, base + 4, enemyWhite) && !chAttacked(board, base + 3, enemyWhite) && !chAttacked(board, base + 2, enemyWhite)) {
+          moves.push({ from, to: base + 2, flag: 'castleQ' });
+        }
+      }
+    } else {
+      const dirs = type === 'b' ? CH_DIAG : type === 'r' ? CH_STRAIGHT : CH_DIAG.concat(CH_STRAIGHT);
+      for (const [dr, dc] of dirs) {
+        let r = row + dr;
+        let c = col + dc;
+        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+          const target = board[r * 8 + c];
+          if (target === '') {
+            moves.push({ from, to: r * 8 + c });
+          } else {
+            if (chIsWhite(target) !== white) moves.push({ from, to: r * 8 + c });
+            break;
+          }
+          r += dr;
+          c += dc;
+        }
+      }
+    }
+  }
+  return moves;
+}
+
+// Führt einen Zug aus und liefert den neuen Spielzustand (Seite am Zug wechselt).
+function chApply(state, m) {
+  const board = state.board.slice();
+  const piece = board[m.from];
+  const white = chIsWhite(piece);
+  board[m.from] = '';
+  if (m.flag === 'ep') board[m.to + (white ? 8 : -8)] = '';
+  board[m.to] = m.promo ? (white ? m.promo.toUpperCase() : m.promo) : piece;
+  if (m.flag === 'castleK') { board[m.to + 1] = ''; board[m.to - 1] = white ? 'R' : 'r'; }
+  if (m.flag === 'castleQ') { board[m.to - 2] = ''; board[m.to + 1] = white ? 'R' : 'r'; }
+
+  let castling = state.castling;
+  const strip = (chars) => { for (const ch of chars) castling = castling.replace(ch, ''); };
+  if (piece === 'K') strip('KQ');
+  if (piece === 'k') strip('kq');
+  [m.from, m.to].forEach((sq) => {
+    if (sq === 63) strip('K');
+    if (sq === 56) strip('Q');
+    if (sq === 7) strip('k');
+    if (sq === 0) strip('q');
+  });
+  const ep = m.flag === 'double' ? (m.from + m.to) / 2 : -1;
+  return { board, turn: state.turn === 1 ? 2 : 1, castling, ep };
+}
+
+// Nur Züge, nach denen der eigene König nicht im Schach steht.
+function chLegalMoves(state) {
+  const white = state.turn === 1;
+  return chPseudoMoves(state).filter((m) => !chInCheck(chApply(state, m).board, white));
+}
+
+function chPositionKey(state) {
+  // "en passant" zählt nur, wenn er auch wirklich möglich ist (gleiche Stellung = gleiche Zugmöglichkeiten)
+  const epPart = (state.ep >= 0 && chLegalMoves(state).some((m) => m.flag === 'ep')) ? String(state.ep) : '-';
+  return state.board.map((c) => c || '.').join('') + (state.turn === 1 ? 'w' : 'b') + (state.castling || '-') + epPart;
+}
+
+// Zu wenig Material für ein Matt: König gegen König, König+Läufer/Springer gegen König,
+// oder nur Läufer, die alle auf gleichfarbigen Feldern stehen.
+function chInsufficientMaterial(board) {
+  const minors = [];
+  for (let i = 0; i < 64; i++) {
+    const p = board[i];
+    if (p === '') continue;
+    const t = p.toLowerCase();
+    if (t === 'k') continue;
+    if (t === 'p' || t === 'r' || t === 'q') return false;
+    minors.push({ t, squareColor: ((i >> 3) + (i & 7)) % 2 });
+  }
+  if (minors.length <= 1) return true;
+  return minors.every((m) => m.t === 'b' && m.squareColor === minors[0].squareColor);
+}
+
+// Beurteilt die Stellung NACH einem Zug (die Seite am Zug ist der Gegner des Ziehenden).
+function chEvaluate(state, posHistory) {
+  const white = state.turn === 1;
+  if (chLegalMoves(state).length === 0) {
+    return chInCheck(state.board, white) ? { over: true, mate: true, reason: 'checkmate' } : { over: true, draw: true, reason: 'stalemate' };
+  }
+  if (chInsufficientMaterial(state.board)) return { over: true, draw: true, reason: 'insufficient' };
+  const key = posHistory[posHistory.length - 1];
+  if (posHistory.filter((k) => k === key).length >= 3) return { over: true, draw: true, reason: 'repetition' };
+  return { over: false };
 }
 
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
-async function c4Try(fn, okMessage) {
-  if (c4Busy) return false;
-  c4Busy = true;
+async function gameTry(fn, okMessage) {
+  if (gameBusy) return false;
+  gameBusy = true;
   try {
     await fn();
     if (okMessage) toast(okMessage);
@@ -2198,33 +2425,46 @@ async function c4Try(fn, okMessage) {
     toast(err && err.message ? err.message : 'Das hat nicht geklappt.');
     return false;
   } finally {
-    c4Busy = false;
+    gameBusy = false;
   }
 }
 
-// Beendet eine Partie und schreibt Sieg/Unentschieden in die Statistik.
-function c4ApplyResult(tx, gameRef, game, baseUpdate, winnerNum, winCells) {
+// Beendet eine Partie und schreibt Sieg/Remis in die Statistik des jeweiligen Spiels.
+function gameApplyResult(tx, gameRef, game, baseUpdate, winnerNum, extra) {
   const ts = FieldValue.serverTimestamp();
   tx.update(gameRef, {
-    ...baseUpdate, status: 'finished', winner: winnerNum, winCells: winCells || [], finishedAt: ts, updatedAt: ts
+    ...baseUpdate, ...(extra || {}), status: 'finished', winner: winnerNum, finishedAt: ts, updatedAt: ts
   });
-  const statsRef = db.collection('gameStats').doc('connect4');
+  const type = gameTypeOf(game);
+  const statsRef = db.collection('gameStats').doc(type);
+  const label = (GAME_TYPES[type] || GAME_TYPES.connect4).label;
   if (winnerNum === 0) {
-    tx.set(statsRef, { draws: { [c4PairKey(game.players[0], game.players[1])]: FieldValue.increment(1) } }, { merge: true });
+    tx.set(statsRef, { draws: { [gamePairKey(game.players[0], game.players[1])]: FieldValue.increment(1) } }, { merge: true });
   } else {
     const winner = game.players[winnerNum - 1];
     const loser = game.players[winnerNum === 1 ? 1 : 0];
     tx.set(statsRef, {
       wins: { [winner.toLowerCase() + '|' + loser.toLowerCase()]: FieldValue.increment(1) },
-      lastWin: { winner, loser, game: C4_GAME_LABEL, at: ts }
+      lastWin: { winner, loser, game: label, at: ts }
     }, { merge: true });
   }
 }
 
-function c4Challenge(opponentName) {
+function gameInitialFields(type) {
+  if (type === 'chess') {
+    const st = chNewState();
+    return {
+      board: st.board, turn: 1, castling: st.castling, ep: -1, posHistory: [chPositionKey(st)],
+      moves: 0, lastFrom: -1, lastTo: -1, winner: 0, reason: '', drawOffer: 0
+    };
+  }
+  return { board: c4NewBoard(), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
+}
+
+function gameChallenge(type, opponentName) {
   const me = currentUser.name;
-  return c4Try(async () => {
-    const ref = db.collection('games').doc(c4GameId(me, opponentName));
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameDocId(type, me, opponentName));
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (snap.exists) {
@@ -2233,16 +2473,15 @@ function c4Challenge(opponentName) {
       }
       const ts = FieldValue.serverTimestamp();
       tx.set(ref, {
-        type: 'connect4', players: [me, opponentName], pairKey: c4PairKey(me, opponentName),
-        status: 'invited', board: c4NewBoard(), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1,
-        createdAt: ts, updatedAt: ts
+        type, players: [me, opponentName], pairKey: gamePairKey(me, opponentName), status: 'invited',
+        ...gameInitialFields(type), createdAt: ts, updatedAt: ts
       });
     });
   }, `Herausforderung an ${opponentName} gesendet.`);
 }
 
-function c4Accept(gameId) {
-  return c4Try(async () => {
+function gameAccept(gameId) {
+  return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -2256,29 +2495,61 @@ function c4Accept(gameId) {
 }
 
 // Ablehnen (Eingeladener) bzw. Zurückziehen (Herausforderer) – die Einladung wird gelöscht.
-function c4CancelInvite(gameId) {
-  return c4Try(async () => {
+function gameCancelInvite(gameId) {
+  return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) return;
       const g = snap.data();
       if (g.status !== 'invited') throw new Error('Die Einladung wurde schon beantwortet.');
-      if (c4PlayerIndex(g, currentUser.name) < 0) throw new Error('Das ist nicht deine Partie.');
+      if (gamePlayerIndex(g, currentUser.name) < 0) throw new Error('Das ist nicht deine Partie.');
       tx.delete(ref);
     });
   });
 }
 
-function c4PlayMove(gameId, col) {
-  return c4Try(async () => {
+async function gameResign(gameId) {
+  const ok = await confirmModal('Aufgeben?', 'Die Partie ist dann verloren und zählt als Sieg für deinen Gegner.', 'Aufgeben');
+  if (!ok) return false;
+  return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
       const g = snap.data();
       if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
-      const myIdx = c4PlayerIndex(g, currentUser.name);
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      gameApplyResult(tx, ref, g, {}, myIdx === 0 ? 2 : 1, { reason: 'resign' });
+    });
+  });
+}
+
+async function gameRemoveFinished(gameId) {
+  const ok = await confirmModal('Partie entfernen?', 'Die Partie verschwindet aus deiner Liste. Die Siege bleiben in der Tabelle erhalten.', 'Entfernen');
+  if (!ok) return false;
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      if (snap.data().status !== 'finished') throw new Error('Nur beendete Partien lassen sich entfernen.');
+      tx.delete(ref);
+    });
+  });
+}
+
+function c4PlayMove(gameId, col) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'connect4') throw new Error('Das ist keine 4-Gewinnt-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
       if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
       const myNum = myIdx + 1;
       if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
@@ -2290,55 +2561,107 @@ function c4PlayMove(gameId, col) {
       board[idx] = myNum;
       const base = { board, lastMove: idx, moves: (g.moves || 0) + 1 };
       const winCells = c4CheckWin(board, idx, myNum);
-      if (winCells) c4ApplyResult(tx, ref, g, base, myNum, winCells);
-      else if (c4IsFull(board)) c4ApplyResult(tx, ref, g, base, 0, []);
+      if (winCells) gameApplyResult(tx, ref, g, base, myNum, { winCells });
+      else if (c4IsFull(board)) gameApplyResult(tx, ref, g, base, 0, { winCells: [] });
       else tx.update(ref, { ...base, turn: myNum === 1 ? 2 : 1, updatedAt: FieldValue.serverTimestamp() });
     });
   });
 }
 
-async function c4Resign(gameId) {
-  const ok = await confirmModal('Aufgeben?', 'Die Partie ist dann verloren und zählt als Sieg für deinen Gegner.', 'Aufgeben');
-  if (!ok) return false;
-  return c4Try(async () => {
+function chessPlayMove(gameId, from, to, promo) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'chess') throw new Error('Das ist keine Schachpartie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
+      const state = { board: g.board, turn: g.turn, castling: g.castling || '', ep: Number.isInteger(g.ep) ? g.ep : -1 };
+      const candidates = chLegalMoves(state).filter((m) => m.from === from && m.to === to);
+      if (!candidates.length) throw new Error('Dieser Zug ist nicht erlaubt.');
+      const wanted = (promo || 'q').toLowerCase();
+      const move = candidates.find((m) => !m.promo) || candidates.find((m) => m.promo === wanted);
+      if (!move) throw new Error('Ungültige Umwandlung.');
+      const next = chApply(state, move);
+      const history = [...(g.posHistory || []), chPositionKey(next)];
+      const base = {
+        board: next.board, castling: next.castling, ep: next.ep, posHistory: history,
+        moves: (g.moves || 0) + 1, lastFrom: from, lastTo: to, drawOffer: 0
+      };
+      const verdict = chEvaluate(next, history);
+      if (verdict.mate) gameApplyResult(tx, ref, g, base, myNum, { reason: 'checkmate' });
+      else if (verdict.draw) gameApplyResult(tx, ref, g, base, 0, { reason: verdict.reason });
+      else tx.update(ref, { ...base, turn: myNum === 1 ? 2 : 1, updatedAt: FieldValue.serverTimestamp() });
+    });
+  });
+}
+
+// ----- Remis-Angebot (nur Schach) -----
+function chessOfferDraw(gameId) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'chess') throw new Error('Remis gibt es nur beim Schach.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      if (g.drawOffer) throw new Error('Es gibt schon ein Remis-Angebot.');
+      tx.update(ref, { drawOffer: myIdx + 1, updatedAt: FieldValue.serverTimestamp() });
+    });
+  }, 'Remis angeboten.');
+}
+
+function chessAnswerDraw(gameId, accept) {
+  return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
       const g = snap.data();
       if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
-      const myIdx = c4PlayerIndex(g, currentUser.name);
+      const myIdx = gamePlayerIndex(g, currentUser.name);
       if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
-      c4ApplyResult(tx, ref, g, {}, myIdx === 0 ? 2 : 1, []);
+      if (!g.drawOffer) throw new Error('Es gibt kein Remis-Angebot mehr.');
+      if (g.drawOffer === myIdx + 1) throw new Error('Das ist dein eigenes Angebot.');
+      if (accept) gameApplyResult(tx, ref, g, { drawOffer: 0 }, 0, { reason: 'agreement' });
+      else tx.update(ref, { drawOffer: 0, updatedAt: FieldValue.serverTimestamp() });
     });
-  });
+  }, accept ? 'Remis vereinbart.' : null);
 }
 
-async function c4RemoveFinished(gameId) {
-  const ok = await confirmModal('Partie entfernen?', 'Die Partie verschwindet aus deiner Liste. Die Siege bleiben in der Tabelle erhalten.', 'Entfernen');
-  if (!ok) return false;
-  return c4Try(async () => {
+function chessWithdrawDraw(gameId) {
+  return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists) return;
-      if (snap.data().status !== 'finished') throw new Error('Nur beendete Partien lassen sich entfernen.');
-      tx.delete(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (g.status !== 'active' || myIdx < 0 || g.drawOffer !== myIdx + 1) throw new Error('Es gibt kein eigenes Angebot zum Zurückziehen.');
+      tx.update(ref, { drawOffer: 0, updatedAt: FieldValue.serverTimestamp() });
     });
   });
 }
 
-// <C4-LOGIC-END>
+// <GAMES-LOGIC-END>
 
 // Alte beendete Partien (> 7 Tage) und unbeantwortete Einladungen (> 14 Tage) aufräumen.
-function c4Cleanup(games) {
+function gameCleanup(games) {
   const now = Date.now();
   games.forEach((g) => {
     const ts = g.status === 'finished' ? g.finishedAt : g.createdAt;
     const ms = ts && ts.toMillis ? ts.toMillis() : null;
     if (!ms) return;
     const ageDays = (now - ms) / 86400000;
-    if ((g.status === 'finished' && ageDays > C4_FINISHED_KEEP_DAYS) || (g.status === 'invited' && ageDays > C4_STALE_INVITE_DAYS)) {
+    if ((g.status === 'finished' && ageDays > GAME_FINISHED_KEEP_DAYS) || (g.status === 'invited' && ageDays > GAME_STALE_INVITE_DAYS)) {
       db.collection('games').doc(g.id).delete().catch(() => {});
     }
   });
@@ -2348,33 +2671,38 @@ function c4Cleanup(games) {
 function subscribeGames() {
   return db.collection('games').where('players', 'array-contains', currentUser.name).onSnapshot((snap) => {
     gamesRaw = snap.docs.map((d) => ({ id: d.id, ...d.data({ serverTimestamps: 'estimate' }) }));
-    if (c4OpenAfterAccept) {
-      const g = gameOf(c4OpenAfterAccept);
+    if (gameOpenAfterAccept) {
+      const g = gameOf(gameOpenAfterAccept);
       if (g && g.status === 'active') {
-        const id = c4OpenAfterAccept;
-        c4OpenAfterAccept = null;
-        c4OpenBoard(id);
+        const id = gameOpenAfterAccept;
+        gameOpenAfterAccept = null;
+        gameOpenBoard(id);
       }
     }
     renderGames();
     renderHomeGames();
     updateGamesBadge();
-    c4Cleanup(gamesRaw);
+    gameCleanup(gamesRaw);
   });
 }
 
 function subscribeGameStats() {
-  return db.collection('gameStats').doc('connect4').onSnapshot((doc) => {
+  const unsubs = Object.keys(GAME_TYPES).map((type) => db.collection('gameStats').doc(type).onSnapshot((doc) => {
     const d = doc.exists ? doc.data({ serverTimestamps: 'estimate' }) : {};
-    gameStats = { wins: d.wins || {}, draws: d.draws || {}, lastWin: d.lastWin || null };
+    gameStatsAll[type] = { wins: d.wins || {}, draws: d.draws || {}, lastWin: d.lastWin || null };
     renderHomeLastWin();
     if (currentScreen === 'games') renderGames();
-  });
+  }));
+  return () => unsubs.forEach((u) => u());
 }
 
 // ----- Hilfsfunktionen für die Anzeige -----
 function gameOf(id) {
   return gamesRaw.find((g) => g.id === id);
+}
+
+function gameLabel(g) {
+  return (GAME_TYPES[gameTypeOf(g)] || GAME_TYPES.connect4).label;
 }
 
 function coloredNameHtml(name) {
@@ -2388,47 +2716,78 @@ function canonicalUserName(lower) {
   return u ? u.name : lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
-// Einladungen an mich und Partien, in denen ich am Zug bin
+// Einladungen an mich, Partien in denen ich am Zug bin und Remis-Angebote an mich (alle Spiele)
 function gamesPendingInfo() {
   const me = currentUser.name.toLowerCase();
   const invites = gamesRaw.filter((g) => g.status === 'invited' && g.players[1].toLowerCase() === me);
   const myTurn = gamesRaw.filter((g) => g.status === 'active' && g.players[g.turn - 1].toLowerCase() === me);
-  return { invites, myTurn };
+  const drawOffers = gamesRaw.filter((g) => g.status === 'active' && g.drawOffer
+    && g.players[g.drawOffer === 1 ? 1 : 0].toLowerCase() === me);
+  return { invites, myTurn, drawOffers };
+}
+
+// Anzahl Partien, bei denen etwas auf mich wartet (optional nur für ein Spiel)
+function gamesPendingCount(type) {
+  const { invites, myTurn, drawOffers } = gamesPendingInfo();
+  const ids = new Set([...invites, ...myTurn, ...drawOffers].filter((g) => !type || gameTypeOf(g) === type).map((g) => g.id));
+  return ids.size;
 }
 
 function updateGamesBadge() {
   const badge = document.getElementById('nav-badge-home');
   if (!badge || !currentUser) return;
-  const { invites, myTurn } = gamesPendingInfo();
-  badge.classList.toggle('show', invites.length + myTurn.length > 0 && currentScreen !== 'home' && currentScreen !== 'games');
+  badge.classList.toggle('show', gamesPendingCount() > 0 && currentScreen !== 'home' && currentScreen !== 'games');
 }
 
 // ----- Startseite: Karte "Spiele" und Karte "Letzter Sieg" -----
 function renderHomeGames() {
   const el = document.getElementById('home-games-content');
   if (!el || !currentUser) return;
-  const { invites, myTurn } = gamesPendingInfo();
+  const { invites, myTurn, drawOffers } = gamesPendingInfo();
   const lines = [];
-  invites.forEach((g) => lines.push(`<div class="games-hint-line">⚔️ ${coloredNameHtml(g.players[0])} fordert dich zu ${C4_GAME_LABEL} heraus</div>`));
+  invites.forEach((g) => lines.push(`<div class="games-hint-line">⚔️ ${coloredNameHtml(g.players[0])} fordert dich zu ${escapeHtml(gameLabel(g))} heraus</div>`));
   myTurn.forEach((g) => {
-    const opp = g.players[c4PlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
-    lines.push(`<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)}</div>`);
+    const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
+    lines.push(`<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)} (${escapeHtml(gameLabel(g))})</div>`);
   });
-  el.innerHTML = lines.length ? lines.join('') : `<div class="games-muted">${C4_GAME_LABEL} &amp; mehr – tippen zum Spielen</div>`;
+  drawOffers.forEach((g) => {
+    const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
+    lines.push(`<div class="games-hint-line">🤝 ${coloredNameHtml(opp)} bietet dir Remis an (${escapeHtml(gameLabel(g))})</div>`);
+  });
+  const names = Object.values(GAME_TYPES).map((t) => t.label).join(', ');
+  el.innerHTML = lines.length ? lines.join('') : `<div class="games-muted">${escapeHtml(names)} &amp; mehr – tippen zum Spielen</div>`;
+}
+
+// Der allerletzte Sieg über ALLE Spiele hinweg
+function latestWinOverall() {
+  let best = null;
+  Object.entries(gameStatsAll).forEach(([type, st]) => {
+    const lw = st.lastWin;
+    if (!lw || !lw.at || !lw.at.toMillis || !lw.at.toDate) return;
+    if (!best || lw.at.toMillis() > best.at.toMillis()) best = { ...lw, game: lw.game || GAME_TYPES[type].label };
+  });
+  return best;
 }
 
 function renderHomeLastWin() {
   const card = document.getElementById('home-card-letzterSieg');
   const el = document.getElementById('home-lastwin-content');
   if (!card || !el) return;
-  const lw = gameStats.lastWin;
-  if (!lw || !lw.at || !lw.at.toDate) { card.style.display = 'none'; return; }
+  const lw = latestWinOverall();
+  if (!lw) { card.style.display = 'none'; return; }
   const dateLabel = lw.at.toDate().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
   card.style.display = '';
-  el.innerHTML = `${dateLabel} ${coloredNameHtml(lw.winner)} hat gegen ${coloredNameHtml(lw.loser)} in ${escapeHtml(lw.game || C4_GAME_LABEL)} gewonnen.`;
+  el.innerHTML = `${dateLabel} ${coloredNameHtml(lw.winner)} hat gegen ${coloredNameHtml(lw.loser)} in ${escapeHtml(lw.game)} gewonnen.`;
 }
 
 // ----- Spiele-Seite -----
+function resetGamesView() {
+  gamesView = 'menu';
+  openGameId = null;
+  lastBoardSig = '';
+  chSel = null;
+}
+
 function renderGames() {
   const el = document.getElementById('games-content');
   const titleEl = document.getElementById('games-title');
@@ -2437,74 +2796,83 @@ function renderGames() {
   if (gamesView === 'board') {
     const g = gameOf(openGameId);
     if (g && g.status !== 'invited') {
-      renderC4Board(el, titleEl, g);
+      if (gameTypeOf(g) === 'chess') renderChessBoard(el, titleEl, g);
+      else renderC4Board(el, titleEl, g);
       return;
     }
     gamesView = 'lobby';
     openGameId = null;
+    chSel = null;
   }
   lastBoardSig = '';
   if (gamesView === 'menu') renderGamesMenu(el, titleEl);
-  else renderC4Lobby(el, titleEl);
+  else renderGameLobby(el, titleEl, gamesType);
 }
 
 function renderGamesMenu(el, titleEl) {
   titleEl.textContent = '🎮 Spiele';
-  const { invites, myTurn } = gamesPendingInfo();
-  const n = invites.length + myTurn.length;
-  el.innerHTML = `
-    <button class="game-tile" data-open-game="connect4">
-      <span class="game-tile-icon">🔴</span>
-      <span class="game-tile-text"><strong>${C4_GAME_LABEL}</strong><small>Zu zweit, abwechselnd Steine einwerfen</small></span>
+  el.innerHTML = Object.entries(GAME_TYPES).map(([type, t]) => {
+    const n = gamesPendingCount(type);
+    return `
+    <button class="game-tile" data-open-game="${type}">
+      <span class="game-tile-icon">${t.icon}</span>
+      <span class="game-tile-text"><strong>${escapeHtml(t.label)}</strong><small>${escapeHtml(t.subtitle)}</small></span>
       ${n ? `<span class="game-tile-badge">${n}</span>` : ''}
     </button>`;
-  el.querySelector('[data-open-game="connect4"]').addEventListener('click', () => {
+  }).join('');
+  el.querySelectorAll('[data-open-game]').forEach((b) => b.addEventListener('click', () => {
+    gamesType = b.dataset.openGame;
     gamesView = 'lobby';
     renderGames();
-  });
+  }));
 }
 
-function c4Priority(g) {
-  const me = currentUser.name.toLowerCase();
-  const myIdx = c4PlayerIndex(g, me);
+function gamePriority(g) {
+  const myIdx = gamePlayerIndex(g, currentUser.name);
   if (g.status === 'invited') return myIdx === 1 ? 0 : 3;
-  if (g.status === 'active') return g.turn === myIdx + 1 ? 1 : 2;
+  if (g.status === 'active') {
+    const drawForMe = g.drawOffer && g.drawOffer !== myIdx + 1;
+    return (g.turn === myIdx + 1 || drawForMe) ? 1 : 2;
+  }
   return 4;
 }
 
-function c4GameCardHtml(g) {
-  const myIdx = c4PlayerIndex(g, currentUser.name);
+function gameCardHtml(g) {
+  const myIdx = gamePlayerIndex(g, currentUser.name);
   const oppName = g.players[myIdx === 0 ? 1 : 0];
   let info = '';
   let actions = '';
   if (g.status === 'invited') {
     if (myIdx === 1) {
       info = `${coloredNameHtml(oppName)} fordert dich heraus`;
-      actions = `<button class="btn btn-primary btn-small" data-c4-accept="${g.id}">Annehmen</button>
-                 <button class="btn btn-secondary btn-small" data-c4-decline="${g.id}">Ablehnen</button>`;
+      actions = `<button class="btn btn-primary btn-small" data-g-accept="${g.id}">Annehmen</button>
+                 <button class="btn btn-secondary btn-small" data-g-decline="${g.id}">Ablehnen</button>`;
     } else {
       info = `Warte auf Antwort von ${coloredNameHtml(oppName)}`;
-      actions = `<button class="btn btn-secondary btn-small" data-c4-decline="${g.id}">Zurückziehen</button>`;
+      actions = `<button class="btn btn-secondary btn-small" data-g-decline="${g.id}">Zurückziehen</button>`;
     }
   } else if (g.status === 'active') {
     const myTurn = g.turn === myIdx + 1;
-    info = `Gegen ${coloredNameHtml(oppName)} – ${myTurn ? '<strong>du bist dran</strong>' : 'Gegner ist dran'}`;
-    actions = `<button class="btn btn-primary btn-small" data-c4-open="${g.id}">Öffnen</button>`;
+    let extra = '';
+    if (g.drawOffer) extra = g.drawOffer === myIdx + 1 ? ' · Remis angeboten' : ' · <strong>Remis-Angebot</strong>';
+    info = `Gegen ${coloredNameHtml(oppName)} – ${myTurn ? '<strong>du bist dran</strong>' : 'Gegner ist dran'}${extra}`;
+    actions = `<button class="btn btn-primary btn-small" data-g-open="${g.id}">Öffnen</button>`;
   } else {
     let result;
     if (g.winner === 0) result = 'Unentschieden';
     else if (g.winner === myIdx + 1) result = '🏆 Du hast gewonnen';
     else result = `${coloredNameHtml(oppName)} hat gewonnen`;
     info = `Gegen ${coloredNameHtml(oppName)} – ${result}`;
-    actions = `<button class="btn btn-secondary btn-small" data-c4-open="${g.id}">Ansehen</button>
-               <button class="btn btn-primary btn-small" data-c4-rematch="${escapeHtml(oppName)}">Revanche</button>
-               <button class="btn btn-ghost btn-small" data-c4-remove="${g.id}">Entfernen</button>`;
+    actions = `<button class="btn btn-secondary btn-small" data-g-open="${g.id}">Ansehen</button>
+               <button class="btn btn-primary btn-small" data-g-rematch="${escapeHtml(oppName)}">Revanche</button>
+               <button class="btn btn-ghost btn-small" data-g-remove="${g.id}">Entfernen</button>`;
   }
   return `<div class="game-card"><div>${info}</div><div class="game-card-actions">${actions}</div></div>`;
 }
 
 // Eine Zeile pro Duell (Spielerpaar): Stand "Siege A : Siege B", der Führende steht links.
-function c4DuelRows() {
+function gameDuelRows(type) {
+  const stats = gameStatsAll[type] || { wins: {}, draws: {} };
   const duels = {};
   const duelOf = (a, b) => {
     const key = [a, b].sort().join('|');
@@ -2514,12 +2882,12 @@ function c4DuelRows() {
     }
     return duels[key];
   };
-  Object.entries(gameStats.wins || {}).forEach(([key, n]) => {
+  Object.entries(stats.wins || {}).forEach(([key, n]) => {
     const [winner, loser] = key.split('|');
     const d = duelOf(winner, loser);
     if (winner === d.x) d.xWins += n; else d.yWins += n;
   });
-  Object.entries(gameStats.draws || {}).forEach(([key, n]) => {
+  Object.entries(stats.draws || {}).forEach(([key, n]) => {
     const [a, b] = key.split('|');
     duelOf(a, b).draws += n;
   });
@@ -2533,8 +2901,8 @@ function c4DuelRows() {
   }).sort((a, b) => b.total - a.total || a.left.name.localeCompare(b.left.name) || a.right.name.localeCompare(b.right.name));
 }
 
-function c4StatsTableHtml() {
-  const rows = c4DuelRows();
+function gameStatsTableHtml(type) {
+  const rows = gameDuelRows(type);
   if (!rows.length) return `<div class="games-muted">Noch keine beendeten Partien.</div>`;
   const body = rows.map((r) => `
     <tr>
@@ -2547,33 +2915,37 @@ function c4StatsTableHtml() {
     <tbody>${body}</tbody></table>`;
 }
 
-function c4OpenBoard(gameId) {
+function gameOpenBoard(gameId) {
   const g = gameOf(gameId);
   if (!g) return;
+  gamesType = gameTypeOf(g);
   openGameId = gameId;
   gamesView = 'board';
   lastBoardSig = '';
+  chSel = null;
   c4AnimKey = g.id + ':' + (g.moves || 0);   // beim Öffnen keine Fall-Animation
   renderGames();
 }
 
-function renderC4Lobby(el, titleEl) {
-  titleEl.textContent = C4_GAME_LABEL;
+function renderGameLobby(el, titleEl, type) {
+  const t = GAME_TYPES[type] || GAME_TYPES.connect4;
+  titleEl.textContent = t.label;
   const me = currentUser.name;
-  const myGames = gamesRaw.slice().sort((a, b) => c4Priority(a) - c4Priority(b));
+  const typeGames = gamesRaw.filter((g) => gameTypeOf(g) === type);
+  const myGames = typeGames.slice().sort((a, b) => gamePriority(a) - gamePriority(b));
   const gamesHtml = myGames.length
-    ? myGames.map(c4GameCardHtml).join('')
+    ? myGames.map(gameCardHtml).join('')
     : `<div class="games-muted">Noch keine Partien. Fordere unten jemanden heraus!</div>`;
 
   const others = Object.values(usersMap)
     .filter((u) => u.name.toLowerCase() !== me.toLowerCase())
     .sort((a, b) => a.name.localeCompare(b.name));
   const challengeHtml = others.length ? others.map((u) => {
-    const g = gamesRaw.find((x) => x.pairKey === c4PairKey(me, u.name));
+    const g = typeGames.find((x) => x.pairKey === gamePairKey(me, u.name));
     let right;
     if (g && g.status === 'active') right = '<span class="game-hint">Partie läuft</span>';
     else if (g && g.status === 'invited') right = '<span class="game-hint">Einladung offen</span>';
-    else right = `<button class="btn btn-secondary btn-small" data-c4-challenge="${escapeHtml(u.name)}">Herausfordern</button>`;
+    else right = `<button class="btn btn-secondary btn-small" data-g-challenge="${escapeHtml(u.name)}">Herausfordern</button>`;
     return `<div class="game-card"><div class="game-card-top">${coloredNameHtml(u.name)}${right}</div></div>`;
   }).join('') : `<div class="games-muted">Es gibt noch keine anderen Nutzer.</div>`;
 
@@ -2583,25 +2955,26 @@ function renderC4Lobby(el, titleEl) {
     <div class="games-section-title">Herausfordern</div>
     ${challengeHtml}
     <div class="games-section-title">Wer hat wie oft gegen wen gewonnen?</div>
-    ${c4StatsTableHtml()}`;
+    ${gameStatsTableHtml(type)}`;
 
-  el.querySelectorAll('[data-c4-challenge]').forEach((b) => b.addEventListener('click', () => c4Challenge(b.dataset.c4Challenge)));
-  el.querySelectorAll('[data-c4-rematch]').forEach((b) => b.addEventListener('click', () => c4Challenge(b.dataset.c4Rematch)));
-  el.querySelectorAll('[data-c4-accept]').forEach((b) => b.addEventListener('click', async () => {
-    const id = b.dataset.c4Accept;
-    c4OpenAfterAccept = id;
-    const ok = await c4Accept(id);
-    if (!ok) c4OpenAfterAccept = null;
+  el.querySelectorAll('[data-g-challenge]').forEach((b) => b.addEventListener('click', () => gameChallenge(type, b.dataset.gChallenge)));
+  el.querySelectorAll('[data-g-rematch]').forEach((b) => b.addEventListener('click', () => gameChallenge(type, b.dataset.gRematch)));
+  el.querySelectorAll('[data-g-accept]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.gAccept;
+    gameOpenAfterAccept = id;
+    const ok = await gameAccept(id);
+    if (!ok) gameOpenAfterAccept = null;
   }));
-  el.querySelectorAll('[data-c4-decline]').forEach((b) => b.addEventListener('click', () => c4CancelInvite(b.dataset.c4Decline)));
-  el.querySelectorAll('[data-c4-open]').forEach((b) => b.addEventListener('click', () => c4OpenBoard(b.dataset.c4Open)));
-  el.querySelectorAll('[data-c4-remove]').forEach((b) => b.addEventListener('click', () => c4RemoveFinished(b.dataset.c4Remove)));
+  el.querySelectorAll('[data-g-decline]').forEach((b) => b.addEventListener('click', () => gameCancelInvite(b.dataset.gDecline)));
+  el.querySelectorAll('[data-g-open]').forEach((b) => b.addEventListener('click', () => gameOpenBoard(b.dataset.gOpen)));
+  el.querySelectorAll('[data-g-remove]').forEach((b) => b.addEventListener('click', () => gameRemoveFinished(b.dataset.gRemove)));
 }
 
+// ----- 4 Gewinnt: Spielbrett -----
 function renderC4Board(el, titleEl, g) {
-  titleEl.textContent = C4_GAME_LABEL;
-  const myIdx = c4PlayerIndex(g, currentUser.name);
-  const styles = c4StoneStyles(g);
+  titleEl.textContent = GAME_TYPES.connect4.label;
+  const myIdx = gamePlayerIndex(g, currentUser.name);
+  const styles = gameStoneStyles(g);
 
   // Nur neu zeichnen, wenn sich wirklich etwas geändert hat (sonst würde die Fall-Animation abbrechen)
   const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.winner, g.players, styles]);
@@ -2647,9 +3020,9 @@ function renderC4Board(el, titleEl, g) {
 
   let actions = '';
   if (isActive && myIdx >= 0) {
-    actions = `<button class="btn btn-ghost btn-small" id="c4-resign-btn">Aufgeben</button>`;
+    actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
   } else if (g.status === 'finished' && myIdx >= 0) {
-    actions = `<button class="btn btn-primary btn-small" id="c4-rematch-btn">Revanche</button>`;
+    actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
   }
 
   el.innerHTML = `
@@ -2662,21 +3035,177 @@ function renderC4Board(el, titleEl, g) {
     <div class="c4-actions">${actions}</div>`;
 
   el.querySelectorAll('[data-c4-col]').forEach((b) => b.addEventListener('click', () => c4PlayMove(g.id, parseInt(b.dataset.c4Col, 10))));
-  const resignBtn = el.querySelector('#c4-resign-btn');
-  if (resignBtn) resignBtn.addEventListener('click', () => c4Resign(g.id));
-  const rematchBtn = el.querySelector('#c4-rematch-btn');
+  bindResignAndRematch(el, g, myIdx);
+}
+
+function bindResignAndRematch(el, g, myIdx) {
+  const resignBtn = el.querySelector('#g-resign-btn');
+  if (resignBtn) resignBtn.addEventListener('click', () => gameResign(g.id));
+  const rematchBtn = el.querySelector('#g-rematch-btn');
   if (rematchBtn) {
     rematchBtn.addEventListener('click', async () => {
       const opp = g.players[myIdx === 0 ? 1 : 0];
-      const ok = await c4Challenge(opp);
-      if (ok) { gamesView = 'lobby'; openGameId = null; renderGames(); }
+      const ok = await gameChallenge(gameTypeOf(g), opp);
+      if (ok) { gamesView = 'lobby'; openGameId = null; chSel = null; renderGames(); }
     });
   }
 }
 
-// Zurück-Knopf: Brett -> Übersicht 4 Gewinnt -> Spiele-Menü -> Startseite
+// ----- Schach: Spielbrett -----
+const CH_GLYPHS = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
+const CH_PROMO_LABELS = { q: 'Dame', r: 'Turm', b: 'Läufer', n: 'Springer' };
+const CH_REASONS = {
+  checkmate: 'Schachmatt', resign: 'Aufgabe', stalemate: 'Patt', insufficient: 'zu wenig Material',
+  repetition: 'dreifache Stellungswiederholung', agreement: 'Einigung'
+};
+
+// Alle Figuren werden mit den "ausgefüllten" Symbolen gezeichnet und in der Farbe des Spielers eingefärbt.
+// \uFE0E erzwingt die Textdarstellung (sonst zeigen manche Handys den Bauern als Emoji ohne Farbe).
+function chGlyph(piece) {
+  return CH_GLYPHS[piece.toLowerCase()] + '\uFE0E';
+}
+
+function renderChessBoard(el, titleEl, g) {
+  titleEl.textContent = GAME_TYPES.chess.label;
+  const myIdx = gamePlayerIndex(g, currentUser.name);
+  const styles = gameStoneStyles(g);
+  const isActive = g.status === 'active';
+  const myTurn = isActive && myIdx >= 0 && g.turn === myIdx + 1;
+  const state = { board: g.board, turn: g.turn, castling: g.castling || '', ep: Number.isInteger(g.ep) ? g.ep : -1 };
+
+  // Eine Auswahl gilt nur, solange sich die Stellung nicht geändert hat und ich am Zug bin
+  if (chSel && (chSel.gameId !== g.id || chSel.moves !== (g.moves || 0) || !myTurn)) chSel = null;
+
+  const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.winner, g.reason, g.drawOffer, g.players, styles, chSel]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const legal = myTurn ? chLegalMoves(state) : [];
+  const targets = new Map();                       // Zielfeld -> true, wenn dort geschlagen wird
+  if (chSel) legal.filter((m) => m.from === chSel.from).forEach((m) => targets.set(m.to, g.board[m.to] !== '' || m.flag === 'ep'));
+
+  let checkKing = -1;
+  if (g.status === 'finished' && g.reason === 'checkmate') checkKing = chKingSquare(g.board, g.winner === 2);
+  else if (isActive && chInCheck(g.board, g.turn === 1)) checkKing = chKingSquare(g.board, g.turn === 1);
+
+  const flipped = myIdx === 1;                     // Schwarz sieht das Brett von seiner Seite
+  let squares = '';
+  for (let i = 0; i < 8; i++) {
+    for (let j = 0; j < 8; j++) {
+      const r = flipped ? 7 - i : i;
+      const c = flipped ? 7 - j : j;
+      const idx = r * 8 + c;
+      const p = g.board[idx];
+      const classes = ['ch-sq', (r + c) % 2 === 0 ? 'light' : 'dark'];
+      if (idx === g.lastFrom || idx === g.lastTo) classes.push('last');
+      if (idx === checkKing) classes.push('check');
+      if (chSel && chSel.from === idx) classes.push('sel');
+      if (targets.has(idx)) classes.push(targets.get(idx) ? 'cap' : 'dot');
+      const piece = p ? `<span class="ch-piece" style="color:${chIsWhite(p) ? styles[0].fill : styles[1].fill}">${chGlyph(p)}</span>` : '';
+      squares += `<div class="${classes.join(' ')}" data-ch-sq="${idx}">${piece}</div>`;
+    }
+  }
+
+  const chip = (idx) => `
+    <div class="c4-player ${isActive && g.turn === idx + 1 ? 'turn' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}<small class="ch-side">${idx === 0 ? 'Weiß' : 'Schwarz'}</small>
+    </div>`;
+
+  let status = '';
+  if (g.status === 'finished') {
+    const why = CH_REASONS[g.reason] || '';
+    status = g.winner === 0
+      ? `🤝 Remis${why ? ' – ' + why : ''}`
+      : `🏆 ${coloredNameHtml(g.players[g.winner - 1])} hat gewonnen!${why ? ' (' + why + ')' : ''}`;
+  } else {
+    const check = checkKing >= 0 ? '<strong>Schach!</strong> ' : '';
+    if (myTurn) status = check + '<strong>Du bist dran</strong>';
+    else if (isActive) status = check + `${coloredNameHtml(g.players[g.turn - 1])} ist dran …`;
+  }
+
+  let promoHtml = '';
+  if (chSel && chSel.promoTo !== null && chSel.promoTo !== undefined) {
+    const color = styles[myIdx].fill;
+    promoHtml = `<div class="ch-promo"><span class="games-muted">Umwandeln in:</span>
+      ${['q', 'r', 'b', 'n'].map((k) => `<button class="btn btn-secondary btn-small" data-ch-promo="${k}"><span style="color:${color};font-size:1.2rem;">${chGlyph(k)}</span> ${CH_PROMO_LABELS[k]}</button>`).join('')}
+      <button class="btn btn-ghost btn-small" id="ch-promo-cancel">Abbrechen</button></div>`;
+  }
+
+  let banner = '';
+  let actions = '';
+  if (isActive && myIdx >= 0) {
+    if (g.drawOffer && g.drawOffer !== myIdx + 1) {
+      banner = `<div class="ch-banner">🤝 ${coloredNameHtml(g.players[g.drawOffer - 1])} bietet Remis an
+        <div class="c4-actions" style="margin-top:8px;"><button class="btn btn-primary btn-small" id="ch-draw-accept">Annehmen</button>
+        <button class="btn btn-secondary btn-small" id="ch-draw-decline">Ablehnen</button></div></div>`;
+      actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+    } else if (g.drawOffer) {
+      banner = `<div class="ch-banner">🤝 Remis angeboten – warte auf Antwort
+        <div class="c4-actions" style="margin-top:8px;"><button class="btn btn-secondary btn-small" id="ch-draw-withdraw">Zurückziehen</button></div></div>`;
+      actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+    } else {
+      actions = `<button class="btn btn-secondary btn-small" id="ch-draw-offer">Remis anbieten</button>
+                 <button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+    }
+  } else if (g.status === 'finished' && myIdx >= 0) {
+    actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
+  }
+
+  el.innerHTML = `
+    <div class="c4-players">${chip(0)}<span class="c4-vs">gegen</span>${chip(1)}</div>
+    <div class="c4-status">${status}</div>
+    <div class="ch-board">${squares}</div>
+    ${promoHtml}
+    ${banner}
+    <div class="c4-actions">${actions}</div>`;
+
+  el.querySelectorAll('[data-ch-sq]').forEach((sq) => sq.addEventListener('click', () => chessSquareClick(g, myIdx, legal, parseInt(sq.dataset.chSq, 10))));
+  el.querySelectorAll('[data-ch-promo]').forEach((b) => b.addEventListener('click', () => {
+    const sel = chSel;
+    chSel = null;
+    chessPlayMove(g.id, sel.from, sel.promoTo, b.dataset.chPromo);
+  }));
+  const cancel = el.querySelector('#ch-promo-cancel');
+  if (cancel) cancel.addEventListener('click', () => { chSel = null; renderGames(); });
+  const on = (id, fn) => { const b = el.querySelector(id); if (b) b.addEventListener('click', fn); };
+  on('#ch-draw-offer', () => chessOfferDraw(g.id));
+  on('#ch-draw-accept', () => chessAnswerDraw(g.id, true));
+  on('#ch-draw-decline', () => chessAnswerDraw(g.id, false));
+  on('#ch-draw-withdraw', () => chessWithdrawDraw(g.id));
+  bindResignAndRematch(el, g, myIdx);
+}
+
+// Tippen auf ein Feld: eigene Figur auswählen -> Zielfeld antippen (bei Umwandlung danach die Figur wählen)
+function chessSquareClick(g, myIdx, legal, idx) {
+  if (!legal.length) return;
+  if (chSel && chSel.promoTo !== null && chSel.promoTo !== undefined) return;   // erst die Umwandlung wählen
+  if (chSel) {
+    const cand = legal.filter((m) => m.from === chSel.from && m.to === idx);
+    if (cand.length) {
+      if (cand[0].promo) {
+        chSel = { ...chSel, promoTo: idx };
+        renderGames();
+        return;
+      }
+      const from = chSel.from;
+      chSel = null;
+      chessPlayMove(g.id, from, idx);
+      return;
+    }
+  }
+  const p = g.board[idx];
+  const mine = p !== '' && chIsWhite(p) === (myIdx === 0);
+  if (mine && legal.some((m) => m.from === idx) && !(chSel && chSel.from === idx)) {
+    chSel = { gameId: g.id, moves: g.moves || 0, from: idx, promoTo: null };
+  } else {
+    chSel = null;
+  }
+  renderGames();
+}
+
+// Zurück-Knopf: Brett -> Übersicht des Spiels -> Spiele-Menü -> Startseite
 document.getElementById('games-back-btn').addEventListener('click', () => {
-  if (gamesView === 'board') { gamesView = 'lobby'; openGameId = null; }
+  if (gamesView === 'board') { gamesView = 'lobby'; openGameId = null; chSel = null; }
   else if (gamesView === 'lobby') { gamesView = 'menu'; }
   else { showScreen('home'); return; }
   renderGames();
