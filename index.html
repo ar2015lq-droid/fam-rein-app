@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=16">
+<link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
 
@@ -75,6 +75,16 @@
         <div class="card termine-card" id="home-card-termine" data-order-key="termine" style="display:none;">
           <div class="label">📅 Termine heute</div>
           <div id="home-termine-content"></div>
+        </div>
+
+        <div class="card games-card" id="home-card-spiele" data-order-key="spiele">
+          <div class="label">🎮 Spiele</div>
+          <div id="home-games-content"></div>
+        </div>
+
+        <div class="card lastwin-card" id="home-card-letzterSieg" data-order-key="letzterSieg" style="display:none;">
+          <div class="label">🏆 Letzter Sieg</div>
+          <div id="home-lastwin-content"></div>
         </div>
       </div>
     </section>
@@ -290,7 +300,7 @@
       </div>
 
       <div class="tab-panel" id="admin-order">
-        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (50-Cent-Bonus, Konto, Essen, Wichtig, Krank heute, Krank-Statistik, Termine) auf der Startseite erscheinen.</div>
+        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (50-Cent-Bonus, Konto, Essen, Wichtig, Krank heute, Krank-Statistik, Termine, Spiele, Letzter Sieg) auf der Startseite erscheinen.</div>
         <ul class="order-list" id="admin-order-list"></ul>
       </div>
 
@@ -367,9 +377,18 @@
       <div id="spezial-gym-users"></div>
     </section>
 
+    <!-- ---------- Spiele ---------- -->
+    <section class="screen" id="screen-games" data-screen="games">
+      <div class="screen-header">
+        <h1 id="games-title">🎮 Spiele</h1>
+        <button class="btn-icon" id="games-back-btn" title="Zurück">←</button>
+      </div>
+      <div id="games-content"></div>
+    </section>
+
     <!-- ---------- Bottom Nav ---------- -->
     <nav id="bottom-nav">
-      <button class="nav-btn" data-target="home"><span class="nav-icon">🏠</span>Start</button>
+      <button class="nav-btn" data-target="home"><span class="nav-icon">🏠</span>Start<span class="nav-badge" id="nav-badge-home"></span></button>
       <button class="nav-btn" data-target="tasks"><span class="nav-icon">📋</span>Listen<span class="nav-badge" id="nav-badge-tasks"></span></button>
       <button class="nav-btn" data-target="aktuell"><span class="nav-icon">🔔</span>Aktuell<span class="nav-badge" id="nav-badge-chat"></span></button>
       <button class="nav-btn" data-target="konto"><span class="nav-icon">🏦</span>Konto</button>
@@ -392,6 +411,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=21"></script>
 </body>
 </html>

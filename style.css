@@ -379,6 +379,59 @@ a { color: inherit; }
 .cal-cell.sick { background: var(--accent-coral); color: #fff; font-weight: 700; }
 .cal-cell.trained { background: var(--accent-green); color: #fff; font-weight: 700; }
 
+/* ---------- Spiele (Startseiten-Karten, Spiele-Seite) ---------- */
+.games-card { --stripe: var(--accent-green); cursor: pointer; }
+.games-card .label, .lastwin-card .label { font-weight: 600; margin-bottom: 6px; display: block; }
+.lastwin-card { --stripe: var(--accent-gold); }
+.games-hint-line { font-size: 0.88rem; margin-top: 4px; }
+.games-muted { font-size: 0.88rem; color: var(--text-muted); }
+
+.game-tile {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: var(--surface); color: var(--text); border: none; border-radius: var(--radius-m);
+  padding: 16px; box-shadow: var(--shadow-soft); cursor: pointer; margin-bottom: 10px; font: inherit;
+}
+.game-tile-icon { font-size: 1.8rem; }
+.game-tile-text { flex: 1; display: flex; flex-direction: column; }
+.game-tile-text small { color: var(--text-muted); font-size: 0.8rem; }
+.game-tile-badge {
+  background: var(--accent-red); color: #fff; border-radius: 999px; min-width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center; font-size: 0.78rem; font-weight: 700; padding: 0 6px;
+}
+.games-section-title { font-size: 0.95rem; font-weight: 700; margin: 20px 0 8px; }
+.game-card { background: var(--surface); border-radius: var(--radius-s); padding: 12px 14px; margin-bottom: 8px; box-shadow: var(--shadow-soft); }
+.game-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.game-card-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.game-hint { font-size: 0.8rem; color: var(--text-muted); }
+
+.games-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius-s); overflow: hidden; box-shadow: var(--shadow-soft); font-size: 0.9rem; }
+.games-table th { text-align: left; font-size: 0.75rem; color: var(--text-muted); padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.games-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.games-table tr:last-child td { border-bottom: none; }
+.games-table th.num, .games-table td.num { text-align: right; font-weight: 700; }
+
+/* ---------- 4 Gewinnt: Spielbrett ---------- */
+.c4-players { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.c4-player { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--surface); border: 2px solid transparent; }
+.c4-player.turn { border-color: var(--accent-gold); }
+.c4-dot { width: 16px; height: 16px; border-radius: 50%; box-shadow: inset 0 0 0 3px var(--ring, transparent); }
+.c4-vs { color: var(--text-muted); font-size: 0.8rem; }
+.c4-status { text-align: center; margin-bottom: 12px; font-size: 0.95rem; min-height: 1.4em; }
+.c4-wrap { max-width: 420px; margin: 0 auto; }
+.c4-cols, .c4-board { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.c4-cols { margin-bottom: 6px; padding: 0 10px; }
+.c4-col { background: var(--surface-alt); border: none; border-radius: 10px; padding: 8px 0; font-size: 1rem; cursor: pointer; color: var(--text); }
+.c4-col:disabled { opacity: 0.3; cursor: default; }
+.c4-board { background: #3B4A54; padding: 10px; border-radius: 14px; }
+.c4-cell { aspect-ratio: 1; border-radius: 50%; background: #1a2328; position: relative; }
+.c4-stone { position: absolute; inset: 0; border-radius: 50%; box-shadow: inset 0 0 0 4px var(--ring, transparent), inset 0 0 0 6px rgba(0,0,0,0.18); }
+.c4-stone.drop { animation: c4-drop 0.5s cubic-bezier(0.3, 0.7, 0.4, 1) both; z-index: 2; }
+.c4-stone.win { animation: c4-pulse 0.8s ease-in-out infinite alternate; }
+.c4-stone.drop.win { animation: c4-drop 0.5s cubic-bezier(0.3, 0.7, 0.4, 1) both, c4-pulse 0.8s ease-in-out 0.5s infinite alternate; }
+@keyframes c4-drop { from { transform: translateY(calc(var(--drop-rows, 1) * -118%)); } to { transform: translateY(0); } }
+@keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
+.c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
+
 /* ---------- Spezial Kalender: eine Zeile pro Person ---------- */
 .gym-user-row { background: var(--surface); border-radius: var(--radius-s); padding: 10px 12px; margin-bottom: 8px; box-shadow: var(--shadow-soft); }
 .gym-user-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }

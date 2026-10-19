@@ -7,7 +7,7 @@
 const ADMIN_NAME = 'Alex';
 const DAILY_MENUS = ['kalender', 'tasks', 'chat', 'konto', 'ideen'];
 const MENU_LABELS = { kalender: 'Kalender', tasks: 'Aufgaben', chat: 'Chat', konto: 'Konto', ideen: 'Ideen' };
-const DEFAULT_ORDER = ['bonus', 'konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine'];
+const DEFAULT_ORDER = ['bonus', 'konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine', 'spiele', 'letzterSieg'];
 const DEFAULT_PALETTE = ['#74AFC6', '#86B96C', '#DA8578', '#A692C4', '#E3A857', '#5FA8A0'];
 
 // ---------- Firebase init ----------
@@ -54,7 +54,7 @@ function toast(msg) {
   setTimeout(() => el.remove(), 2600);
 }
 
-function confirmModal(title, text) {
+function confirmModal(title, text, confirmLabel = 'Löschen') {
   return new Promise((resolve) => {
     const root = document.getElementById('modal-root');
     root.innerHTML = `
@@ -64,7 +64,7 @@ function confirmModal(title, text) {
           <p>${escapeHtml(text)}</p>
           <div class="modal-actions">
             <button class="btn btn-secondary" id="modal-cancel">Abbrechen</button>
-            <button class="btn btn-danger" id="modal-confirm">Löschen</button>
+            <button class="btn btn-danger" id="modal-confirm">${escapeHtml(confirmLabel)}</button>
           </div>
         </div>
       </div>`;
@@ -108,6 +108,9 @@ function subscribeUsers() {
       renderGym();
       renderSpezialKalender();
       renderLoginLogs();
+      renderGames();
+      renderHomeGames();
+      renderHomeLastWin();
       subscribeAllTransactions();
     }
     tryResolveLogin();
@@ -292,7 +295,7 @@ document.getElementById('darkmode-toggle').addEventListener('change', (e) => {
 function showScreen(name) {
   currentScreen = name;
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.dataset.screen === name));
-  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays' || name === 'spezial') && b.dataset.target === 'settings')));
+  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays' || name === 'spezial') && b.dataset.target === 'settings') || (name === 'games' && b.dataset.target === 'home')));
 
   if (name === 'home') {
     logHomeView();
@@ -316,6 +319,14 @@ function showScreen(name) {
   if (name === 'tasks') {
     markTasksSeen();
   }
+
+  if (name === 'games') {
+    gamesView = 'menu';
+    openGameId = null;
+    lastBoardSig = '';
+    renderGames();
+  }
+  updateGamesBadge();
 
   if (DAILY_MENUS.includes(name)) {
     markMenuVisited(name);
@@ -2070,6 +2081,596 @@ document.getElementById('birthday-add-btn').addEventListener('click', () => {
 });
 
 // ==========================================================
+// SPIELE — 4 Gewinnt: Herausforderung, Zugspiel, Siegestabelle
+// Pro Spielerpaar gibt es immer nur EINE Partie (feste Dokument-ID).
+// ==========================================================
+// <GAMES-START>
+
+const C4_COLS = 7;
+const C4_ROWS = 6;
+const C4_STALE_INVITE_DAYS = 14;
+const C4_FINISHED_KEEP_DAYS = 7;
+const C4_GAME_LABEL = '4 Gewinnt';
+
+let gamesRaw = [];                                   // alle Partien, an denen ich beteiligt bin
+let gameStats = { wins: {}, draws: {}, lastWin: null };
+let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
+let openGameId = null;
+let lastBoardSig = '';
+let c4AnimKey = '';
+let c4Busy = false;
+let c4OpenAfterAccept = null;
+
+// <C4-LOGIC-START>
+
+// ----- reine Spiellogik (Index = Reihe * 7 + Spalte, Reihe 0 = oben) -----
+function c4NewBoard() {
+  return new Array(C4_COLS * C4_ROWS).fill(0);
+}
+
+function c4DropRow(board, col) {
+  for (let row = C4_ROWS - 1; row >= 0; row--) {
+    if (board[row * C4_COLS + col] === 0) return row;
+  }
+  return -1; // Spalte voll
+}
+
+// Liefert die Felder der Gewinnreihe (>= 4 in einer Linie durch idx) oder null.
+function c4CheckWin(board, idx, player) {
+  const row = Math.floor(idx / C4_COLS);
+  const col = idx % C4_COLS;
+  const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
+  for (const [dr, dc] of directions) {
+    const cells = [idx];
+    for (const sign of [1, -1]) {
+      let r = row + dr * sign;
+      let c = col + dc * sign;
+      while (r >= 0 && r < C4_ROWS && c >= 0 && c < C4_COLS && board[r * C4_COLS + c] === player) {
+        cells.push(r * C4_COLS + c);
+        r += dr * sign;
+        c += dc * sign;
+      }
+    }
+    if (cells.length >= 4) return cells;
+  }
+  return null;
+}
+
+function c4IsFull(board) {
+  return board.every((v) => v !== 0);
+}
+
+function c4PairKey(a, b) {
+  return [a.toLowerCase(), b.toLowerCase()].sort().join('|');
+}
+
+function c4GameId(a, b) {
+  return 'c4_' + c4PairKey(a, b).split('|').map(encodeURIComponent).join('__');
+}
+
+function c4PlayerIndex(game, name) {
+  return (game.players || []).findIndex((n) => n.toLowerCase() === name.toLowerCase());
+}
+
+// ----- Farben der Steine (Nutzerfarben, bei zu großer Ähnlichkeit wird Spieler 2 angepasst) -----
+function hexToRgb(hex) {
+  if (typeof hex !== 'string') return null;
+  let h = hex.trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+function colorDistance(a, b) {
+  const ra = hexToRgb(a);
+  const rb = hexToRgb(b);
+  if (!ra || !rb) return 999;
+  return Math.sqrt(ra.reduce((sum, v, i) => sum + (v - rb[i]) ** 2, 0));
+}
+
+function invertColor(hex) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return '#888888';
+  return '#' + rgb.map((v) => (255 - v).toString(16).padStart(2, '0')).join('');
+}
+
+function c4StoneStyles(game) {
+  const users = game.players.map((n) => usersMap[n.toLowerCase()]);
+  const defaults = ['#E3A857', '#74AFC6'];
+  const fills = users.map((u, i) => (u && userColor(u, 'color')) || defaults[i]);
+  const rings = users.map((u, i) => (u && userColor(u, 'border')) || fills[i]);
+  if (colorDistance(fills[0], fills[1]) < 90) {
+    fills[1] = colorDistance(fills[0], rings[1]) >= 90 ? rings[1] : invertColor(fills[0]);
+  }
+  return [{ fill: fills[0], ring: rings[0] }, { fill: fills[1], ring: rings[1] }];
+}
+
+// ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
+async function c4Try(fn, okMessage) {
+  if (c4Busy) return false;
+  c4Busy = true;
+  try {
+    await fn();
+    if (okMessage) toast(okMessage);
+    return true;
+  } catch (err) {
+    console.error(err);
+    toast(err && err.message ? err.message : 'Das hat nicht geklappt.');
+    return false;
+  } finally {
+    c4Busy = false;
+  }
+}
+
+// Beendet eine Partie und schreibt Sieg/Unentschieden in die Statistik.
+function c4ApplyResult(tx, gameRef, game, baseUpdate, winnerNum, winCells) {
+  const ts = FieldValue.serverTimestamp();
+  tx.update(gameRef, {
+    ...baseUpdate, status: 'finished', winner: winnerNum, winCells: winCells || [], finishedAt: ts, updatedAt: ts
+  });
+  const statsRef = db.collection('gameStats').doc('connect4');
+  if (winnerNum === 0) {
+    tx.set(statsRef, { draws: { [c4PairKey(game.players[0], game.players[1])]: FieldValue.increment(1) } }, { merge: true });
+  } else {
+    const winner = game.players[winnerNum - 1];
+    const loser = game.players[winnerNum === 1 ? 1 : 0];
+    tx.set(statsRef, {
+      wins: { [winner.toLowerCase() + '|' + loser.toLowerCase()]: FieldValue.increment(1) },
+      lastWin: { winner, loser, game: C4_GAME_LABEL, at: ts }
+    }, { merge: true });
+  }
+}
+
+function c4Challenge(opponentName) {
+  const me = currentUser.name;
+  return c4Try(async () => {
+    const ref = db.collection('games').doc(c4GameId(me, opponentName));
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.exists) {
+        const g = snap.data();
+        if (g.status === 'invited' || g.status === 'active') throw new Error('Zwischen euch läuft schon eine Partie.');
+      }
+      const ts = FieldValue.serverTimestamp();
+      tx.set(ref, {
+        type: 'connect4', players: [me, opponentName], pairKey: c4PairKey(me, opponentName),
+        status: 'invited', board: c4NewBoard(), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1,
+        createdAt: ts, updatedAt: ts
+      });
+    });
+  }, `Herausforderung an ${opponentName} gesendet.`);
+}
+
+function c4Accept(gameId) {
+  return c4Try(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Einladung gibt es nicht mehr.');
+      const g = snap.data();
+      if (g.status !== 'invited') throw new Error('Die Einladung ist nicht mehr offen.');
+      if (g.players[1].toLowerCase() !== currentUser.name.toLowerCase()) throw new Error('Diese Einladung gilt nicht für dich.');
+      tx.update(ref, { status: 'active', startedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    });
+  }, 'Partie gestartet!');
+}
+
+// Ablehnen (Eingeladener) bzw. Zurückziehen (Herausforderer) – die Einladung wird gelöscht.
+function c4CancelInvite(gameId) {
+  return c4Try(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      const g = snap.data();
+      if (g.status !== 'invited') throw new Error('Die Einladung wurde schon beantwortet.');
+      if (c4PlayerIndex(g, currentUser.name) < 0) throw new Error('Das ist nicht deine Partie.');
+      tx.delete(ref);
+    });
+  });
+}
+
+function c4PlayMove(gameId, col) {
+  return c4Try(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = c4PlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
+      if (!Number.isInteger(col) || col < 0 || col >= C4_COLS) throw new Error('Ungültige Spalte.');
+      const board = g.board.slice();
+      const row = c4DropRow(board, col);
+      if (row < 0) throw new Error('Diese Spalte ist voll.');
+      const idx = row * C4_COLS + col;
+      board[idx] = myNum;
+      const base = { board, lastMove: idx, moves: (g.moves || 0) + 1 };
+      const winCells = c4CheckWin(board, idx, myNum);
+      if (winCells) c4ApplyResult(tx, ref, g, base, myNum, winCells);
+      else if (c4IsFull(board)) c4ApplyResult(tx, ref, g, base, 0, []);
+      else tx.update(ref, { ...base, turn: myNum === 1 ? 2 : 1, updatedAt: FieldValue.serverTimestamp() });
+    });
+  });
+}
+
+async function c4Resign(gameId) {
+  const ok = await confirmModal('Aufgeben?', 'Die Partie ist dann verloren und zählt als Sieg für deinen Gegner.', 'Aufgeben');
+  if (!ok) return false;
+  return c4Try(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = c4PlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      c4ApplyResult(tx, ref, g, {}, myIdx === 0 ? 2 : 1, []);
+    });
+  });
+}
+
+async function c4RemoveFinished(gameId) {
+  const ok = await confirmModal('Partie entfernen?', 'Die Partie verschwindet aus deiner Liste. Die Siege bleiben in der Tabelle erhalten.', 'Entfernen');
+  if (!ok) return false;
+  return c4Try(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      if (snap.data().status !== 'finished') throw new Error('Nur beendete Partien lassen sich entfernen.');
+      tx.delete(ref);
+    });
+  });
+}
+
+// <C4-LOGIC-END>
+
+// Alte beendete Partien (> 7 Tage) und unbeantwortete Einladungen (> 14 Tage) aufräumen.
+function c4Cleanup(games) {
+  const now = Date.now();
+  games.forEach((g) => {
+    const ts = g.status === 'finished' ? g.finishedAt : g.createdAt;
+    const ms = ts && ts.toMillis ? ts.toMillis() : null;
+    if (!ms) return;
+    const ageDays = (now - ms) / 86400000;
+    if ((g.status === 'finished' && ageDays > C4_FINISHED_KEEP_DAYS) || (g.status === 'invited' && ageDays > C4_STALE_INVITE_DAYS)) {
+      db.collection('games').doc(g.id).delete().catch(() => {});
+    }
+  });
+}
+
+// ----- Abonnements -----
+function subscribeGames() {
+  return db.collection('games').where('players', 'array-contains', currentUser.name).onSnapshot((snap) => {
+    gamesRaw = snap.docs.map((d) => ({ id: d.id, ...d.data({ serverTimestamps: 'estimate' }) }));
+    if (c4OpenAfterAccept) {
+      const g = gameOf(c4OpenAfterAccept);
+      if (g && g.status === 'active') {
+        const id = c4OpenAfterAccept;
+        c4OpenAfterAccept = null;
+        c4OpenBoard(id);
+      }
+    }
+    renderGames();
+    renderHomeGames();
+    updateGamesBadge();
+    c4Cleanup(gamesRaw);
+  });
+}
+
+function subscribeGameStats() {
+  return db.collection('gameStats').doc('connect4').onSnapshot((doc) => {
+    const d = doc.exists ? doc.data({ serverTimestamps: 'estimate' }) : {};
+    gameStats = { wins: d.wins || {}, draws: d.draws || {}, lastWin: d.lastWin || null };
+    renderHomeLastWin();
+    if (currentScreen === 'games') renderGames();
+  });
+}
+
+// ----- Hilfsfunktionen für die Anzeige -----
+function gameOf(id) {
+  return gamesRaw.find((g) => g.id === id);
+}
+
+function coloredNameHtml(name) {
+  const u = usersMap[(name || '').toLowerCase()];
+  const color = u ? userColor(u, 'color') : null;
+  return `<span style="${color ? `color:${color};` : ''}font-weight:700;">${escapeHtml(name)}</span>`;
+}
+
+function canonicalUserName(lower) {
+  const u = usersMap[lower];
+  return u ? u.name : lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+// Einladungen an mich und Partien, in denen ich am Zug bin
+function gamesPendingInfo() {
+  const me = currentUser.name.toLowerCase();
+  const invites = gamesRaw.filter((g) => g.status === 'invited' && g.players[1].toLowerCase() === me);
+  const myTurn = gamesRaw.filter((g) => g.status === 'active' && g.players[g.turn - 1].toLowerCase() === me);
+  return { invites, myTurn };
+}
+
+function updateGamesBadge() {
+  const badge = document.getElementById('nav-badge-home');
+  if (!badge || !currentUser) return;
+  const { invites, myTurn } = gamesPendingInfo();
+  badge.classList.toggle('show', invites.length + myTurn.length > 0 && currentScreen !== 'home' && currentScreen !== 'games');
+}
+
+// ----- Startseite: Karte "Spiele" und Karte "Letzter Sieg" -----
+function renderHomeGames() {
+  const el = document.getElementById('home-games-content');
+  if (!el || !currentUser) return;
+  const { invites, myTurn } = gamesPendingInfo();
+  const lines = [];
+  invites.forEach((g) => lines.push(`<div class="games-hint-line">⚔️ ${coloredNameHtml(g.players[0])} fordert dich zu ${C4_GAME_LABEL} heraus</div>`));
+  myTurn.forEach((g) => {
+    const opp = g.players[c4PlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
+    lines.push(`<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)}</div>`);
+  });
+  el.innerHTML = lines.length ? lines.join('') : `<div class="games-muted">${C4_GAME_LABEL} &amp; mehr – tippen zum Spielen</div>`;
+}
+
+function renderHomeLastWin() {
+  const card = document.getElementById('home-card-letzterSieg');
+  const el = document.getElementById('home-lastwin-content');
+  if (!card || !el) return;
+  const lw = gameStats.lastWin;
+  if (!lw || !lw.at || !lw.at.toDate) { card.style.display = 'none'; return; }
+  const dateLabel = lw.at.toDate().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  card.style.display = '';
+  el.innerHTML = `${dateLabel} ${coloredNameHtml(lw.winner)} hat gegen ${coloredNameHtml(lw.loser)} in ${escapeHtml(lw.game || C4_GAME_LABEL)} gewonnen.`;
+}
+
+// ----- Spiele-Seite -----
+function renderGames() {
+  const el = document.getElementById('games-content');
+  const titleEl = document.getElementById('games-title');
+  if (!el || !titleEl || !currentUser) return;
+
+  if (gamesView === 'board') {
+    const g = gameOf(openGameId);
+    if (g && g.status !== 'invited') {
+      renderC4Board(el, titleEl, g);
+      return;
+    }
+    gamesView = 'lobby';
+    openGameId = null;
+  }
+  lastBoardSig = '';
+  if (gamesView === 'menu') renderGamesMenu(el, titleEl);
+  else renderC4Lobby(el, titleEl);
+}
+
+function renderGamesMenu(el, titleEl) {
+  titleEl.textContent = '🎮 Spiele';
+  const { invites, myTurn } = gamesPendingInfo();
+  const n = invites.length + myTurn.length;
+  el.innerHTML = `
+    <button class="game-tile" data-open-game="connect4">
+      <span class="game-tile-icon">🔴</span>
+      <span class="game-tile-text"><strong>${C4_GAME_LABEL}</strong><small>Zu zweit, abwechselnd Steine einwerfen</small></span>
+      ${n ? `<span class="game-tile-badge">${n}</span>` : ''}
+    </button>`;
+  el.querySelector('[data-open-game="connect4"]').addEventListener('click', () => {
+    gamesView = 'lobby';
+    renderGames();
+  });
+}
+
+function c4Priority(g) {
+  const me = currentUser.name.toLowerCase();
+  const myIdx = c4PlayerIndex(g, me);
+  if (g.status === 'invited') return myIdx === 1 ? 0 : 3;
+  if (g.status === 'active') return g.turn === myIdx + 1 ? 1 : 2;
+  return 4;
+}
+
+function c4GameCardHtml(g) {
+  const myIdx = c4PlayerIndex(g, currentUser.name);
+  const oppName = g.players[myIdx === 0 ? 1 : 0];
+  let info = '';
+  let actions = '';
+  if (g.status === 'invited') {
+    if (myIdx === 1) {
+      info = `${coloredNameHtml(oppName)} fordert dich heraus`;
+      actions = `<button class="btn btn-primary btn-small" data-c4-accept="${g.id}">Annehmen</button>
+                 <button class="btn btn-secondary btn-small" data-c4-decline="${g.id}">Ablehnen</button>`;
+    } else {
+      info = `Warte auf Antwort von ${coloredNameHtml(oppName)}`;
+      actions = `<button class="btn btn-secondary btn-small" data-c4-decline="${g.id}">Zurückziehen</button>`;
+    }
+  } else if (g.status === 'active') {
+    const myTurn = g.turn === myIdx + 1;
+    info = `Gegen ${coloredNameHtml(oppName)} – ${myTurn ? '<strong>du bist dran</strong>' : 'Gegner ist dran'}`;
+    actions = `<button class="btn btn-primary btn-small" data-c4-open="${g.id}">Öffnen</button>`;
+  } else {
+    let result;
+    if (g.winner === 0) result = 'Unentschieden';
+    else if (g.winner === myIdx + 1) result = '🏆 Du hast gewonnen';
+    else result = `${coloredNameHtml(oppName)} hat gewonnen`;
+    info = `Gegen ${coloredNameHtml(oppName)} – ${result}`;
+    actions = `<button class="btn btn-secondary btn-small" data-c4-open="${g.id}">Ansehen</button>
+               <button class="btn btn-primary btn-small" data-c4-rematch="${escapeHtml(oppName)}">Revanche</button>
+               <button class="btn btn-ghost btn-small" data-c4-remove="${g.id}">Entfernen</button>`;
+  }
+  return `<div class="game-card"><div>${info}</div><div class="game-card-actions">${actions}</div></div>`;
+}
+
+function c4StatsRows() {
+  const rows = [];
+  Object.entries(gameStats.wins || {}).forEach(([key, n]) => {
+    const [w, l] = key.split('|');
+    rows.push({ winner: canonicalUserName(w), loser: canonicalUserName(l), n });
+  });
+  rows.sort((a, b) => b.n - a.n || a.winner.localeCompare(b.winner) || a.loser.localeCompare(b.loser));
+  return rows;
+}
+
+function c4StatsTableHtml() {
+  const rows = c4StatsRows();
+  if (!rows.length) return `<div class="games-muted">Noch keine beendeten Partien.</div>`;
+  const body = rows.map((r) => `
+    <tr><td>${coloredNameHtml(r.winner)}</td><td>${coloredNameHtml(r.loser)}</td><td class="num">${r.n}</td></tr>`).join('');
+  const drawEntries = Object.entries(gameStats.draws || {});
+  const drawsHtml = drawEntries.length
+    ? `<div class="games-muted" style="margin-top:8px;">Unentschieden: ${drawEntries.map(([key, n]) => {
+        const [a, b] = key.split('|');
+        return `${escapeHtml(canonicalUserName(a))} &amp; ${escapeHtml(canonicalUserName(b))} (${n}×)`;
+      }).join(', ')}</div>`
+    : '';
+  return `<table class="games-table">
+    <thead><tr><th>Gewinner</th><th>gegen</th><th class="num">Siege</th></tr></thead>
+    <tbody>${body}</tbody></table>${drawsHtml}`;
+}
+
+function c4OpenBoard(gameId) {
+  const g = gameOf(gameId);
+  if (!g) return;
+  openGameId = gameId;
+  gamesView = 'board';
+  lastBoardSig = '';
+  c4AnimKey = g.id + ':' + (g.moves || 0);   // beim Öffnen keine Fall-Animation
+  renderGames();
+}
+
+function renderC4Lobby(el, titleEl) {
+  titleEl.textContent = C4_GAME_LABEL;
+  const me = currentUser.name;
+  const myGames = gamesRaw.slice().sort((a, b) => c4Priority(a) - c4Priority(b));
+  const gamesHtml = myGames.length
+    ? myGames.map(c4GameCardHtml).join('')
+    : `<div class="games-muted">Noch keine Partien. Fordere unten jemanden heraus!</div>`;
+
+  const others = Object.values(usersMap)
+    .filter((u) => u.name.toLowerCase() !== me.toLowerCase())
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const challengeHtml = others.length ? others.map((u) => {
+    const g = gamesRaw.find((x) => x.pairKey === c4PairKey(me, u.name));
+    let right;
+    if (g && g.status === 'active') right = '<span class="game-hint">Partie läuft</span>';
+    else if (g && g.status === 'invited') right = '<span class="game-hint">Einladung offen</span>';
+    else right = `<button class="btn btn-secondary btn-small" data-c4-challenge="${escapeHtml(u.name)}">Herausfordern</button>`;
+    return `<div class="game-card"><div class="game-card-top">${coloredNameHtml(u.name)}${right}</div></div>`;
+  }).join('') : `<div class="games-muted">Es gibt noch keine anderen Nutzer.</div>`;
+
+  el.innerHTML = `
+    <div class="games-section-title" style="margin-top:0;">Meine Partien</div>
+    ${gamesHtml}
+    <div class="games-section-title">Herausfordern</div>
+    ${challengeHtml}
+    <div class="games-section-title">Wer hat wie oft gegen wen gewonnen?</div>
+    ${c4StatsTableHtml()}`;
+
+  el.querySelectorAll('[data-c4-challenge]').forEach((b) => b.addEventListener('click', () => c4Challenge(b.dataset.c4Challenge)));
+  el.querySelectorAll('[data-c4-rematch]').forEach((b) => b.addEventListener('click', () => c4Challenge(b.dataset.c4Rematch)));
+  el.querySelectorAll('[data-c4-accept]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.c4Accept;
+    c4OpenAfterAccept = id;
+    const ok = await c4Accept(id);
+    if (!ok) c4OpenAfterAccept = null;
+  }));
+  el.querySelectorAll('[data-c4-decline]').forEach((b) => b.addEventListener('click', () => c4CancelInvite(b.dataset.c4Decline)));
+  el.querySelectorAll('[data-c4-open]').forEach((b) => b.addEventListener('click', () => c4OpenBoard(b.dataset.c4Open)));
+  el.querySelectorAll('[data-c4-remove]').forEach((b) => b.addEventListener('click', () => c4RemoveFinished(b.dataset.c4Remove)));
+}
+
+function renderC4Board(el, titleEl, g) {
+  titleEl.textContent = C4_GAME_LABEL;
+  const myIdx = c4PlayerIndex(g, currentUser.name);
+  const styles = c4StoneStyles(g);
+
+  // Nur neu zeichnen, wenn sich wirklich etwas geändert hat (sonst würde die Fall-Animation abbrechen)
+  const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.winner, g.players, styles]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const animate = g.lastMove >= 0 && c4AnimKey !== g.id + ':' + (g.moves || 0);
+  c4AnimKey = g.id + ':' + (g.moves || 0);
+
+  const isActive = g.status === 'active';
+  const myTurn = isActive && myIdx >= 0 && g.turn === myIdx + 1;
+
+  const colButtons = Array.from({ length: C4_COLS }, (_, c) => {
+    const full = c4DropRow(g.board, c) < 0;
+    return `<button class="c4-col" data-c4-col="${c}" ${(!myTurn || full) ? 'disabled' : ''} style="${myTurn ? `color:${styles[myIdx].fill};` : ''}" aria-label="Spalte ${c + 1}">▼</button>`;
+  }).join('');
+
+  const winSet = new Set(g.winCells || []);
+  const cells = g.board.map((v, i) => {
+    let stone = '';
+    if (v) {
+      const st = styles[v - 1];
+      const isLast = animate && i === g.lastMove;
+      const dropVar = isLast ? `--drop-rows:${Math.floor(i / C4_COLS) + 1};` : '';
+      stone = `<span class="c4-stone ${isLast ? 'drop' : ''} ${winSet.has(i) ? 'win' : ''}" style="background:${st.fill};--ring:${st.ring};${dropVar}"></span>`;
+    }
+    return `<div class="c4-cell">${stone}</div>`;
+  }).join('');
+
+  const chip = (idx) => `
+    <div class="c4-player ${isActive && g.turn === idx + 1 ? 'turn' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}
+    </div>`;
+
+  let status = '';
+  if (g.status === 'finished') {
+    status = g.winner === 0 ? '🤝 Unentschieden!' : `🏆 ${coloredNameHtml(g.players[g.winner - 1])} hat gewonnen!`;
+  } else if (myTurn) {
+    status = '<strong>Du bist dran</strong> – wähle oben eine Spalte.';
+  } else if (isActive) {
+    status = `${coloredNameHtml(g.players[g.turn - 1])} ist dran …`;
+  }
+
+  let actions = '';
+  if (isActive && myIdx >= 0) {
+    actions = `<button class="btn btn-ghost btn-small" id="c4-resign-btn">Aufgeben</button>`;
+  } else if (g.status === 'finished' && myIdx >= 0) {
+    actions = `<button class="btn btn-primary btn-small" id="c4-rematch-btn">Revanche</button>`;
+  }
+
+  el.innerHTML = `
+    <div class="c4-players">${chip(0)}<span class="c4-vs">gegen</span>${chip(1)}</div>
+    <div class="c4-status">${status}</div>
+    <div class="c4-wrap">
+      <div class="c4-cols">${colButtons}</div>
+      <div class="c4-board">${cells}</div>
+    </div>
+    <div class="c4-actions">${actions}</div>`;
+
+  el.querySelectorAll('[data-c4-col]').forEach((b) => b.addEventListener('click', () => c4PlayMove(g.id, parseInt(b.dataset.c4Col, 10))));
+  const resignBtn = el.querySelector('#c4-resign-btn');
+  if (resignBtn) resignBtn.addEventListener('click', () => c4Resign(g.id));
+  const rematchBtn = el.querySelector('#c4-rematch-btn');
+  if (rematchBtn) {
+    rematchBtn.addEventListener('click', async () => {
+      const opp = g.players[myIdx === 0 ? 1 : 0];
+      const ok = await c4Challenge(opp);
+      if (ok) { gamesView = 'lobby'; openGameId = null; renderGames(); }
+    });
+  }
+}
+
+// Zurück-Knopf: Brett -> Übersicht 4 Gewinnt -> Spiele-Menü -> Startseite
+document.getElementById('games-back-btn').addEventListener('click', () => {
+  if (gamesView === 'board') { gamesView = 'lobby'; openGameId = null; }
+  else if (gamesView === 'lobby') { gamesView = 'menu'; }
+  else { showScreen('home'); return; }
+  renderGames();
+});
+
+// Karte auf der Startseite öffnet die Spiele-Seite
+document.getElementById('home-card-spiele').addEventListener('click', () => showScreen('games'));
+
+// <GAMES-END>
+
+// ==========================================================
 // GYM (Spezial Kalender) — Trainingstage pro Nutzer
 // Alex legt fest, wer den Reiter sieht + die Zieltage pro Monat.
 // Jeder sieht nur seinen eigenen Kalender, Alex alle freigegebenen.
@@ -2789,7 +3390,7 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays', 'games', 'gameStats'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
@@ -2931,7 +3532,7 @@ function subscribeHomeOrder() {
   });
 }
 
-const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute' };
+const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute', spiele: '🎮 Spiele', letzterSieg: '🏆 Letzter Sieg' };
 
 function renderAdminOrderList() {
   const el = document.getElementById('admin-order-list');
@@ -2984,6 +3585,8 @@ function startAppListeners() {
   unsubscribers.push(subscribeSettingsOrder());
   unsubscribers.push(subscribeGymSettings());
   unsubscribers.push(subscribeGymDays());
+  unsubscribers.push(subscribeGames());
+  unsubscribers.push(subscribeGameStats());
   unsubscribers.push(subscribeSickDays());
   unsubscribers.push(subscribeSickSettings());
   unsubscribers.push(subscribeSickCalendarOrder());
