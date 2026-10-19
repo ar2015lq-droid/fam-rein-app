@@ -578,6 +578,27 @@ a { color: inherit; }
 .user-admin-card { background: var(--surface); border-radius: var(--radius-m); padding: 14px; margin-bottom: 10px; box-shadow: var(--shadow-soft); }
 .user-admin-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .user-admin-name { font-weight: 700; }
+.user-admin-toggle {
+  display: flex; width: 100%; align-items: center; justify-content: space-between;
+  background: none; border: none; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.user-admin-card.open .user-admin-toggle { margin-bottom: 12px; }
+.user-admin-chev { color: var(--text-muted); font-size: 0.9rem; }
+.user-admin-body .btn-danger { margin-top: 12px; }
+
+.collapsible-head {
+  display: flex; width: 100%; align-items: center; justify-content: space-between;
+  background: var(--surface); color: var(--text); border: none; border-radius: var(--radius-m);
+  padding: 14px; margin: 14px 0 10px; font: inherit; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-soft);
+}
+
+#admin-log-list { max-height: 420px; overflow-y: auto; }
+.log-row {
+  display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; margin-bottom: 5px;
+  background: var(--surface); border-radius: 8px; border-left: 4px solid var(--border); font-size: 0.85rem;
+}
+.log-name { font-weight: 700; }
+.log-time { white-space: nowrap; }
 .color-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .color-field { display: flex; flex-direction: column; gap: 4px; }
 .color-field label { font-size: 0.72rem; color: var(--text-muted); }

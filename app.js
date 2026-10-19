@@ -107,6 +107,7 @@ function subscribeUsers() {
       if (isAdmin(currentUser.name)) renderAdminSickCalendars();
       renderGym();
       renderSpezialKalender();
+      renderLoginLogs();
       subscribeAllTransactions();
     }
     tryResolveLogin();
@@ -294,6 +295,7 @@ function showScreen(name) {
   document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays' || name === 'spezial') && b.dataset.target === 'settings')));
 
   if (name === 'home') {
+    logHomeView();
     maybeShowBirthdayConfetti();
   }
   if (name === 'aktuell') {
@@ -2538,23 +2540,42 @@ function buildCalendarGridHtml(userName, year, month, sickDates) {
 
 
 
+let adminUsersExpanded = new Set(); // lowercase names of currently opened user cards
+
 function renderAdminUsers() {
   const el = document.getElementById('admin-user-list');
   if (!el || !isAdmin(currentUser.name)) return;
   const users = Object.values(usersMap).sort((a, b) => a.name.localeCompare(b.name));
-  el.innerHTML = users.map((u) => `
-    <div class="user-admin-card">
-      <div class="user-admin-head">
-        <span class="user-admin-name">${escapeHtml(u.name)}${u.name === ADMIN_NAME ? ' (Admin)' : ''}</span>
-        ${u.name !== ADMIN_NAME ? `<button class="btn-icon" data-delete-user="${escapeHtml(u.name)}">🗑️</button>` : ''}
-      </div>
-      <div class="color-grid">
-        ${colorFieldHtml(u, 'colorLight', 'Farbe (Hell)')}
-        ${colorFieldHtml(u, 'borderLight', 'Rahmen (Hell)')}
-        ${colorFieldHtml(u, 'colorDark', 'Farbe (Dunkel)')}
-        ${colorFieldHtml(u, 'borderDark', 'Rahmen (Dunkel)')}
-      </div>
-    </div>`).join('');
+  el.innerHTML = users.map((u) => {
+    const open = adminUsersExpanded.has(u.name.toLowerCase());
+    const nameColor = userColor(u, 'color');
+    return `
+    <div class="user-admin-card ${open ? 'open' : ''}">
+      <button class="user-admin-toggle" data-toggle-user="${escapeHtml(u.name)}" aria-expanded="${open}">
+        <span class="user-admin-name" style="${nameColor ? `color:${nameColor};` : ''}">${escapeHtml(u.name)}${u.name === ADMIN_NAME ? ' (Admin)' : ''}</span>
+        <span class="user-admin-chev">${open ? '▾' : '▸'}</span>
+      </button>
+      ${open ? `
+      <div class="user-admin-body">
+        <div class="color-grid">
+          ${colorFieldHtml(u, 'colorLight', 'Farbe (Hell)')}
+          ${colorFieldHtml(u, 'borderLight', 'Rahmen (Hell)')}
+          ${colorFieldHtml(u, 'colorDark', 'Farbe (Dunkel)')}
+          ${colorFieldHtml(u, 'borderDark', 'Rahmen (Dunkel)')}
+        </div>
+        ${u.name !== ADMIN_NAME ? `<button class="btn btn-danger btn-small" data-delete-user="${escapeHtml(u.name)}">🗑️ Nutzer löschen</button>` : ''}
+      </div>` : ''}
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-toggle-user]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.toggleUser.toLowerCase();
+      if (adminUsersExpanded.has(key)) adminUsersExpanded.delete(key);
+      else adminUsersExpanded.add(key);
+      renderAdminUsers();
+    });
+  });
 
   el.querySelectorAll('[data-delete-user]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -2575,6 +2596,105 @@ function renderAdminUsers() {
     });
   });
 }
+
+// ==========================================================
+// LOGS (Admin) — wann wurde die Startseite geöffnet (= eingeloggt)
+// Einträge werden nach 14 Tagen automatisch gelöscht.
+// ==========================================================
+
+const LOG_RETENTION_DAYS = 14;
+let loginLogsRaw = [];
+let adminLogsOpen = false;
+
+function logCutoffDate() {
+  return new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+}
+
+// Bei JEDEM Aufruf der Startseite wird ein Eintrag geschrieben (Login, Tippen auf "Start",
+// oder Zurückholen der App aus dem Hintergrund, wenn sie auf der Startseite steht).
+// Nur technische Doppel-Auslösungen innerhalb weniger Sekunden werden zusammengefasst.
+let lastHomeLogAt = 0;
+let lastLogCleanupAt = 0;
+
+async function logHomeView() {
+  if (!currentUser) return;
+  const now = Date.now();
+  if (now - lastHomeLogAt < 5000) return;
+  lastHomeLogAt = now;
+  try {
+    await db.collection('loginLogs').add({ user: currentUser.name, createdAt: FieldValue.serverTimestamp() });
+  } catch (err) {
+    console.error('Login-Log fehlgeschlagen', err);
+  }
+  // Alte Einträge höchstens alle 6 Stunden aufräumen (die App bleibt oft tagelang offen)
+  if (now - lastLogCleanupAt > 6 * 60 * 60 * 1000) {
+    lastLogCleanupAt = now;
+    cleanupOldLogs();
+  }
+}
+
+// App wird aus dem Hintergrund zurückgeholt und zeigt die Startseite -> auch das zählt
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && currentUser && currentScreen === 'home') {
+    logHomeView();
+  }
+});
+
+async function cleanupOldLogs() {
+  try {
+    const cutoff = firebase.firestore.Timestamp.fromDate(logCutoffDate());
+    const snap = await db.collection('loginLogs').where('createdAt', '<', cutoff).limit(400).get();
+    if (snap.empty) return;
+    const batch = db.batch();
+    snap.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  } catch (err) {
+    console.error('Log-Bereinigung fehlgeschlagen', err);
+  }
+}
+
+function subscribeLoginLogs() {
+  const cutoff = firebase.firestore.Timestamp.fromDate(logCutoffDate());
+  return db.collection('loginLogs').where('createdAt', '>=', cutoff).orderBy('createdAt', 'desc').onSnapshot((snap) => {
+    loginLogsRaw = snap.docs.map((d) => {
+      const data = d.data({ serverTimestamps: 'estimate' });
+      return { id: d.id, user: data.user, createdAt: data.createdAt };
+    });
+    renderLoginLogs();
+  });
+}
+
+function renderLoginLogs() {
+  const listEl = document.getElementById('admin-log-list');
+  const countEl = document.getElementById('admin-logs-count');
+  if (!listEl || !countEl) return;
+  const cutoff = logCutoffDate();
+  const entries = loginLogsRaw.filter((e) => e.createdAt && e.createdAt.toDate && e.createdAt.toDate() >= cutoff);
+  countEl.textContent = `(${entries.length})`;
+  if (!entries.length) {
+    listEl.innerHTML = `<div class="empty-state">Noch keine Einträge.</div>`;
+    return;
+  }
+  listEl.innerHTML = entries.map((e) => {
+    const d = e.createdAt.toDate();
+    const userData = usersMap[(e.user || '').toLowerCase()];
+    const color = userData ? userColor(userData, 'color') : null;
+    const border = userData ? userColor(userData, 'border') : null;
+    const dateLabel = d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeLabel = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    return `
+      <div class="log-row" style="${color ? `color:${color};` : ''}${border ? `border-left-color:${border};` : ''}">
+        <span class="log-name">${escapeHtml(e.user)}</span>
+        <span class="log-time">${dateLabel} · ${timeLabel} Uhr</span>
+      </div>`;
+  }).join('');
+}
+
+document.getElementById('admin-logs-toggle').addEventListener('click', () => {
+  adminLogsOpen = !adminLogsOpen;
+  document.getElementById('admin-logs-body').style.display = adminLogsOpen ? '' : 'none';
+  document.getElementById('admin-logs-chev').textContent = adminLogsOpen ? '▾' : '▸';
+});
 
 function colorFieldHtml(u, field, label) {
   const val = u[field] || '#888888';
@@ -2848,6 +2968,7 @@ function startAppListeners() {
 
   if (isAdmin(currentUser.name)) {
     renderAdminUsers();
+    unsubscribers.push(subscribeLoginLogs());
   }
 }
 

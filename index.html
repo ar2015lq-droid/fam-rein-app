@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 
@@ -269,7 +269,17 @@
 
       <div class="tab-panel active" id="admin-users">
         <div id="admin-user-list"></div>
-        <div class="section-note">Neuen Namen + Passwort vergeben, um Zugang zu geben. Falls der Name schon existiert, aber noch kein Passwort hat (z.B. bei der Umstellung auf Passwort-Login), einfach hier den gleichen Namen nochmal mit einem Passwort eintragen.</div>
+
+        <button class="collapsible-head" id="admin-logs-toggle">
+          <span>📋 Logs <span id="admin-logs-count" style="font-weight:400;color:var(--text-muted);"></span></span>
+          <span class="user-admin-chev" id="admin-logs-chev">▸</span>
+        </button>
+        <div id="admin-logs-body" style="display:none;">
+          <div class="section-note">Bei jedem Aufruf der Startseite ein Eintrag (Login, Tippen auf „Start“ oder App aus dem Hintergrund zurückgeholt). Einträge älter als 14 Tage werden automatisch gelöscht.</div>
+          <div id="admin-log-list"></div>
+        </div>
+
+        <div class="section-note" style="margin-top:14px;">Neuen Namen + Passwort vergeben, um Zugang zu geben. Falls der Name schon existiert, aber noch kein Passwort hat (z.B. bei der Umstellung auf Passwort-Login), einfach hier den gleichen Namen nochmal mit einem Passwort eintragen.</div>
         <div class="add-bar" style="margin-bottom:6px;">
           <input type="text" id="admin-new-user-input" placeholder="Name...">
         </div>
@@ -382,6 +392,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>
