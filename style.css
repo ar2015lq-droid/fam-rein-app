@@ -594,11 +594,12 @@ a { color: inherit; }
 
 #admin-log-list { max-height: 420px; overflow-y: auto; }
 .log-row {
-  display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; margin-bottom: 5px;
+  display: flex; align-items: center; gap: 10px; padding: 5px 6px 5px 10px; margin-bottom: 5px;
   background: var(--surface); border-radius: 8px; border-left: 4px solid var(--border); font-size: 0.85rem;
 }
-.log-name { font-weight: 700; }
+.log-name { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .log-time { white-space: nowrap; }
+.log-row .btn-icon { width: 30px; height: 30px; font-size: 0.8rem; flex-shrink: 0; }
 .color-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .color-field { display: flex; flex-direction: column; gap: 4px; }
 .color-field label { font-size: 0.72rem; color: var(--text-muted); }

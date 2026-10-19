@@ -7,7 +7,7 @@
 const ADMIN_NAME = 'Alex';
 const DAILY_MENUS = ['kalender', 'tasks', 'chat', 'konto', 'ideen'];
 const MENU_LABELS = { kalender: 'Kalender', tasks: 'Aufgaben', chat: 'Chat', konto: 'Konto', ideen: 'Ideen' };
-const DEFAULT_ORDER = ['konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine'];
+const DEFAULT_ORDER = ['bonus', 'konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine'];
 const DEFAULT_PALETTE = ['#74AFC6', '#86B96C', '#DA8578', '#A692C4', '#E3A857', '#5FA8A0'];
 
 // ---------- Firebase init ----------
@@ -2686,8 +2686,24 @@ function renderLoginLogs() {
       <div class="log-row" style="${color ? `color:${color};` : ''}${border ? `border-left-color:${border};` : ''}">
         <span class="log-name">${escapeHtml(e.user)}</span>
         <span class="log-time">${dateLabel} · ${timeLabel} Uhr</span>
+        <button class="btn-icon" data-delete-log="${e.id}" title="Eintrag löschen">🗑️</button>
       </div>`;
   }).join('');
+
+  listEl.querySelectorAll('[data-delete-log]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteLoginLog(btn.dataset.deleteLog));
+  });
+}
+
+async function deleteLoginLog(logId) {
+  const ok = await confirmModal('Log-Eintrag löschen?', 'Dieser Eintrag wird endgültig entfernt.');
+  if (!ok) return;
+  try {
+    await db.collection('loginLogs').doc(logId).delete();
+  } catch (err) {
+    console.error(err);
+    toast('Fehler beim Löschen: ' + err.message);
+  }
 }
 
 document.getElementById('admin-logs-toggle').addEventListener('click', () => {
@@ -2896,20 +2912,26 @@ document.getElementById('settings-spezial-link').addEventListener('click', () =>
 document.getElementById('spezial-back-btn').addEventListener('click', () => showScreen('settings'));
 
 // Home order
+// Ergänzt in einer gespeicherten Reihenfolge fehlende Karten an ihrer Standard-Position
+// (z.B. "bonus" ganz oben, wie bisher) und entfernt unbekannte Einträge.
+function mergeHomeOrder(stored) {
+  let order = Array.isArray(stored) ? stored.slice() : [];
+  order = order.filter((key) => DEFAULT_ORDER.includes(key));
+  DEFAULT_ORDER.forEach((key, defaultIdx) => {
+    if (!order.includes(key)) order.splice(Math.min(defaultIdx, order.length), 0, key);
+  });
+  return order;
+}
+
 function subscribeHomeOrder() {
   return db.collection('config').doc('homeOrder').onSnapshot((doc) => {
-    let order = (doc.exists && Array.isArray(doc.data().order)) ? doc.data().order.slice() : [];
-    // Backward-compat: append any new order keys that aren't in an older saved order yet
-    DEFAULT_ORDER.forEach((key) => { if (!order.includes(key)) order.push(key); });
-    // Drop unknown/stale keys
-    order = order.filter((key) => DEFAULT_ORDER.includes(key));
-    homeOrder = order;
+    homeOrder = mergeHomeOrder(doc.exists ? doc.data().order : []);
     renderHomeOrder();
     if (isAdmin(currentUser.name)) renderAdminOrderList();
   });
 }
 
-const ORDER_LABELS = { konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute' };
+const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute' };
 
 function renderAdminOrderList() {
   const el = document.getElementById('admin-order-list');

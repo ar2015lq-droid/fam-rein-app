@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=15">
+<link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
 
@@ -38,12 +38,12 @@
       <div class="greeting" id="home-greeting">Hallo!</div>
       <div class="greeting-sub" id="home-date"></div>
 
-      <div class="card checklist-card" id="home-checklist-card">
-        <span class="label">Heutiger 50-Cent-Bonus</span>
-        <div id="home-checklist-content"></div>
-      </div>
-
       <div id="home-orderable">
+        <div class="card checklist-card" id="home-card-bonus" data-order-key="bonus">
+          <span class="label">Heutiger 50-Cent-Bonus</span>
+          <div id="home-checklist-content"></div>
+        </div>
+
         <div class="card balance-card" id="home-card-konto" data-order-key="konto">
           <div>
             <div class="label">Dein Kontostand</div>
@@ -290,7 +290,7 @@
       </div>
 
       <div class="tab-panel" id="admin-order">
-        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (Konto, Essen, Wichtig, Krank heute, Krank-Statistik) auf der Startseite erscheinen.</div>
+        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (50-Cent-Bonus, Konto, Essen, Wichtig, Krank heute, Krank-Statistik, Termine) auf der Startseite erscheinen.</div>
         <ul class="order-list" id="admin-order-list"></ul>
       </div>
 
@@ -392,6 +392,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
