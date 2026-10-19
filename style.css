@@ -408,7 +408,9 @@ a { color: inherit; }
 .games-table th { text-align: left; font-size: 0.75rem; color: var(--text-muted); padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .games-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .games-table tr:last-child td { border-bottom: none; }
-.games-table th.num, .games-table td.num { text-align: right; font-weight: 700; }
+.games-table .mid { text-align: center; font-weight: 700; white-space: nowrap; }
+.games-table .rt { text-align: right; }
+.games-table small { display: block; font-weight: 400; color: var(--text-muted); font-size: 0.72rem; }
 
 /* ---------- 4 Gewinnt: Spielbrett ---------- */
 .c4-players { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }

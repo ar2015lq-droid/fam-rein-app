@@ -2503,31 +2503,48 @@ function c4GameCardHtml(g) {
   return `<div class="game-card"><div>${info}</div><div class="game-card-actions">${actions}</div></div>`;
 }
 
-function c4StatsRows() {
-  const rows = [];
+// Eine Zeile pro Duell (Spielerpaar): Stand "Siege A : Siege B", der Führende steht links.
+function c4DuelRows() {
+  const duels = {};
+  const duelOf = (a, b) => {
+    const key = [a, b].sort().join('|');
+    if (!duels[key]) {
+      const [x, y] = key.split('|');
+      duels[key] = { x, y, xWins: 0, yWins: 0, draws: 0 };
+    }
+    return duels[key];
+  };
   Object.entries(gameStats.wins || {}).forEach(([key, n]) => {
-    const [w, l] = key.split('|');
-    rows.push({ winner: canonicalUserName(w), loser: canonicalUserName(l), n });
+    const [winner, loser] = key.split('|');
+    const d = duelOf(winner, loser);
+    if (winner === d.x) d.xWins += n; else d.yWins += n;
   });
-  rows.sort((a, b) => b.n - a.n || a.winner.localeCompare(b.winner) || a.loser.localeCompare(b.loser));
-  return rows;
+  Object.entries(gameStats.draws || {}).forEach(([key, n]) => {
+    const [a, b] = key.split('|');
+    duelOf(a, b).draws += n;
+  });
+  return Object.values(duels).map((d) => {
+    const nx = canonicalUserName(d.x);
+    const ny = canonicalUserName(d.y);
+    const xFirst = d.xWins > d.yWins || (d.xWins === d.yWins && nx.localeCompare(ny) <= 0);
+    const left = xFirst ? { name: nx, wins: d.xWins } : { name: ny, wins: d.yWins };
+    const right = xFirst ? { name: ny, wins: d.yWins } : { name: nx, wins: d.xWins };
+    return { left, right, draws: d.draws, total: d.xWins + d.yWins + d.draws };
+  }).sort((a, b) => b.total - a.total || a.left.name.localeCompare(b.left.name) || a.right.name.localeCompare(b.right.name));
 }
 
 function c4StatsTableHtml() {
-  const rows = c4StatsRows();
+  const rows = c4DuelRows();
   if (!rows.length) return `<div class="games-muted">Noch keine beendeten Partien.</div>`;
   const body = rows.map((r) => `
-    <tr><td>${coloredNameHtml(r.winner)}</td><td>${coloredNameHtml(r.loser)}</td><td class="num">${r.n}</td></tr>`).join('');
-  const drawEntries = Object.entries(gameStats.draws || {});
-  const drawsHtml = drawEntries.length
-    ? `<div class="games-muted" style="margin-top:8px;">Unentschieden: ${drawEntries.map(([key, n]) => {
-        const [a, b] = key.split('|');
-        return `${escapeHtml(canonicalUserName(a))} &amp; ${escapeHtml(canonicalUserName(b))} (${n}×)`;
-      }).join(', ')}</div>`
-    : '';
+    <tr>
+      <td>${coloredNameHtml(r.left.name)}</td>
+      <td class="mid">${r.left.wins} : ${r.right.wins}${r.draws ? `<small>${r.draws}× unentschieden</small>` : ''}</td>
+      <td class="rt">${coloredNameHtml(r.right.name)}</td>
+    </tr>`).join('');
   return `<table class="games-table">
-    <thead><tr><th>Gewinner</th><th>gegen</th><th class="num">Siege</th></tr></thead>
-    <tbody>${body}</tbody></table>${drawsHtml}`;
+    <thead><tr><th>Spieler</th><th class="mid">Siege</th><th class="rt">Spieler</th></tr></thead>
+    <tbody>${body}</tbody></table>`;
 }
 
 function c4OpenBoard(gameId) {
@@ -3211,21 +3228,39 @@ function logCutoffDate() {
   return new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 }
 
-// Bei JEDEM Aufruf der Startseite wird ein Eintrag geschrieben (Login, Tippen auf "Start",
-// oder Zurückholen der App aus dem Hintergrund, wenn sie auf der Startseite steht).
-// Nur technische Doppel-Auslösungen innerhalb weniger Sekunden werden zusammengefasst.
+// Pro Person höchstens EIN Eintrag innerhalb von 10 Minuten – egal ob Login, Tippen auf "Start",
+// Zurückholen aus dem Hintergrund, Neuladen oder ein zweites Gerät. Damit das auch geräte- und
+// neuladen-übergreifend klappt, steht der Zeitpunkt des letzten Eintrags in der Datenbank
+// (loginLogMeta/<Name>) und wird zusammen mit dem Log-Eintrag in einer Transaktion geprüft.
+const LOG_MIN_INTERVAL_MS = 10 * 60 * 1000;
 let lastHomeLogAt = 0;
 let lastLogCleanupAt = 0;
 
 async function logHomeView() {
   if (!currentUser) return;
   const now = Date.now();
-  if (now - lastHomeLogAt < 5000) return;
-  lastHomeLogAt = now;
+  if (now - lastHomeLogAt < LOG_MIN_INTERVAL_MS) return;   // schnelle Vorprüfung ohne Datenbank
+  const previousLocal = lastHomeLogAt;
+  lastHomeLogAt = now;                                      // parallele Aufrufe sofort abfangen
+  const metaRef = db.collection('loginLogMeta').doc(currentUser.name);
+  const logRef = db.collection('loginLogs').doc();
+  let lastInDb = 0;
+  let wrote = false;
   try {
-    await db.collection('loginLogs').add({ user: currentUser.name, createdAt: FieldValue.serverTimestamp() });
+    await db.runTransaction(async (tx) => {
+      wrote = false;
+      const snap = await tx.get(metaRef);
+      lastInDb = snap.exists && typeof snap.data().lastLogAt === 'number' ? snap.data().lastLogAt : 0;
+      if (now - lastInDb < LOG_MIN_INTERVAL_MS) return;     // vor kurzem schon eingetragen (z.B. anderes Gerät)
+      tx.set(logRef, { user: currentUser.name, createdAt: FieldValue.serverTimestamp() });
+      tx.set(metaRef, { lastLogAt: now }, { merge: true });
+      wrote = true;
+    });
+    if (!wrote) lastHomeLogAt = Math.max(previousLocal, lastInDb);
   } catch (err) {
+    lastHomeLogAt = previousLocal;                          // bei Fehler beim nächsten Aufruf erneut versuchen
     console.error('Login-Log fehlgeschlagen', err);
+    return;
   }
   // Alte Einträge höchstens alle 6 Stunden aufräumen (die App bleibt oft tagelang offen)
   if (now - lastLogCleanupAt > 6 * 60 * 60 * 1000) {
