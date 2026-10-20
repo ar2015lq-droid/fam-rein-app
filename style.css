@@ -434,6 +434,18 @@ a { color: inherit; }
 @keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
 .c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
+/* ---------- Tic Tac Toe: Spielbrett ---------- */
+.ttt-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-width: 320px; margin: 0 auto; background: #3B4A54; padding: 10px; border-radius: 14px; }
+.ttt-cell { aspect-ratio: 1; background: #1a2328; border: none; border-radius: 10px; padding: 12%; display: flex; align-items: center; justify-content: center; cursor: default; appearance: none; -webkit-appearance: none; }
+.ttt-cell.open { cursor: pointer; }
+.ttt-cell.open:hover { background: #243139; }
+.ttt-cell.win { background: #2a4538; }
+.ttt-mark { width: 100%; height: 100%; display: block; }
+.ttt-mark.pop { animation: ttt-pop 0.28s cubic-bezier(0.3, 0.7, 0.4, 1.3) both; }
+.ttt-cell.win .ttt-mark { animation: c4-pulse 0.8s ease-in-out infinite alternate; }
+.ttt-cell.win .ttt-mark.pop { animation: ttt-pop 0.28s cubic-bezier(0.3, 0.7, 0.4, 1.3) both, c4-pulse 0.8s ease-in-out 0.28s infinite alternate; }
+@keyframes ttt-pop { from { transform: scale(0.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
 /* ---------- Schach: Spielbrett ---------- */
 .ch-board { display: grid; grid-template-columns: repeat(8, 1fr); max-width: 420px; margin: 0 auto; border-radius: 10px; overflow: hidden; box-shadow: var(--shadow-soft); }
 .ch-sq { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; user-select: none; -webkit-user-select: none; }

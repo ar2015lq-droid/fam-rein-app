@@ -2090,13 +2090,15 @@ const GAME_STALE_INVITE_DAYS = 14;
 const GAME_FINISHED_KEEP_DAYS = 7;
 const GAME_TYPES = {
   connect4: { label: '4 Gewinnt', icon: '🔴', subtitle: 'Zu zweit, abwechselnd Steine einwerfen' },
-  chess: { label: 'Schach', icon: '♟️', subtitle: 'Der Klassiker – mit Remis-Angebot' }
+  chess: { label: 'Schach', icon: '♟️', subtitle: 'Der Klassiker – mit Remis-Angebot' },
+  tictactoe: { label: 'Tic Tac Toe', icon: '⭕', subtitle: 'Drei in einer Reihe gewinnt' }
 };
 
 let gamesRaw = [];                                   // alle Partien (alle Spiele), an denen ich beteiligt bin
 let gameStatsAll = {
   connect4: { wins: {}, draws: {}, lastWin: null },
-  chess: { wins: {}, draws: {}, lastWin: null }
+  chess: { wins: {}, draws: {}, lastWin: null },
+  tictactoe: { wins: {}, draws: {}, lastWin: null }
 };
 let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
 let gamesType = 'connect4';                          // welches Spiel in der Übersicht gezeigt wird
@@ -2412,6 +2414,18 @@ function chEvaluate(state, posHistory) {
   return { over: false };
 }
 
+// ----- Tic Tac Toe: reine Spiellogik (Index = Reihe * 3 + Spalte) -----
+const TTT_LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
+
+// Liefert die Felder der Gewinnreihe des Spielers oder null.
+function tttCheckWin(board, player) {
+  return TTT_LINES.find((line) => line.every((i) => board[i] === player)) || null;
+}
+
+function tttIsFull(board) {
+  return board.every((v) => v !== 0);
+}
+
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
 async function gameTry(fn, okMessage) {
   if (gameBusy) return false;
@@ -2457,6 +2471,9 @@ function gameInitialFields(type) {
       board: st.board, turn: 1, castling: st.castling, ep: -1, posHistory: [chPositionKey(st)],
       moves: 0, lastFrom: -1, lastTo: -1, winner: 0, reason: '', drawOffer: 0
     };
+  }
+  if (type === 'tictactoe') {
+    return { board: new Array(9).fill(0), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
   }
   return { board: c4NewBoard(), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
 }
@@ -2563,6 +2580,32 @@ function c4PlayMove(gameId, col) {
       const winCells = c4CheckWin(board, idx, myNum);
       if (winCells) gameApplyResult(tx, ref, g, base, myNum, { winCells });
       else if (c4IsFull(board)) gameApplyResult(tx, ref, g, base, 0, { winCells: [] });
+      else tx.update(ref, { ...base, turn: myNum === 1 ? 2 : 1, updatedAt: FieldValue.serverTimestamp() });
+    });
+  });
+}
+
+function tttPlayMove(gameId, idx) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'tictactoe') throw new Error('Das ist keine Tic-Tac-Toe-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
+      if (!Number.isInteger(idx) || idx < 0 || idx > 8) throw new Error('Ungültiges Feld.');
+      if (g.board[idx] !== 0) throw new Error('Dieses Feld ist schon belegt.');
+      const board = g.board.slice();
+      board[idx] = myNum;
+      const base = { board, lastMove: idx, moves: (g.moves || 0) + 1 };
+      const winCells = tttCheckWin(board, myNum);
+      if (winCells) gameApplyResult(tx, ref, g, base, myNum, { winCells });
+      else if (tttIsFull(board)) gameApplyResult(tx, ref, g, base, 0, { winCells: [] });
       else tx.update(ref, { ...base, turn: myNum === 1 ? 2 : 1, updatedAt: FieldValue.serverTimestamp() });
     });
   });
@@ -2796,7 +2839,9 @@ function renderGames() {
   if (gamesView === 'board') {
     const g = gameOf(openGameId);
     if (g && g.status !== 'invited') {
-      if (gameTypeOf(g) === 'chess') renderChessBoard(el, titleEl, g);
+      const type = gameTypeOf(g);
+      if (type === 'chess') renderChessBoard(el, titleEl, g);
+      else if (type === 'tictactoe') renderTttBoard(el, titleEl, g);
       else renderC4Board(el, titleEl, g);
       return;
     }
@@ -3035,6 +3080,71 @@ function renderC4Board(el, titleEl, g) {
     <div class="c4-actions">${actions}</div>`;
 
   el.querySelectorAll('[data-c4-col]').forEach((b) => b.addEventListener('click', () => c4PlayMove(g.id, parseInt(b.dataset.c4Col, 10))));
+  bindResignAndRematch(el, g, myIdx);
+}
+
+// ----- Tic Tac Toe: Spielbrett (X und O werden als Grafik gezeichnet, sehen also überall gleich aus) -----
+function tttMarkSvg(player, color, pop) {
+  const shape = player === 1
+    ? (stroke, width) => `<path d="M24 24 L76 76 M76 24 L24 76" stroke="${stroke}" stroke-width="${width}" stroke-linecap="round" fill="none"/>`
+    : (stroke, width) => `<circle cx="50" cy="50" r="27" stroke="${stroke}" stroke-width="${width}" fill="none"/>`;
+  return `<svg class="ttt-mark ${pop ? 'pop' : ''}" viewBox="0 0 100 100" aria-hidden="true">${shape('rgba(0,0,0,0.55)', 17)}${shape(color, 11)}</svg>`;
+}
+
+function renderTttBoard(el, titleEl, g) {
+  titleEl.textContent = GAME_TYPES.tictactoe.label;
+  const myIdx = gamePlayerIndex(g, currentUser.name);
+  const styles = gameStoneStyles(g);
+
+  // Nur neu zeichnen, wenn sich wirklich etwas geändert hat (sonst würde die Animation abbrechen)
+  const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.winner, g.players, styles]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const animate = g.lastMove >= 0 && c4AnimKey !== g.id + ':' + (g.moves || 0);
+  c4AnimKey = g.id + ':' + (g.moves || 0);
+
+  const isActive = g.status === 'active';
+  const myTurn = isActive && myIdx >= 0 && g.turn === myIdx + 1;
+  const winSet = new Set(g.winCells || []);
+
+  const cells = g.board.map((v, i) => {
+    const open = myTurn && v === 0;
+    const classes = ['ttt-cell'];
+    if (open) classes.push('open');
+    if (winSet.has(i)) classes.push('win');
+    const mark = v ? tttMarkSvg(v, styles[v - 1].fill, animate && i === g.lastMove) : '';
+    return `<button class="${classes.join(' ')}" data-ttt-cell="${i}" ${open ? '' : 'disabled'} aria-label="Feld ${i + 1}">${mark}</button>`;
+  }).join('');
+
+  const chip = (idx) => `
+    <div class="c4-player ${isActive && g.turn === idx + 1 ? 'turn' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}<small class="ch-side">${idx === 0 ? 'X' : 'O'}</small>
+    </div>`;
+
+  let status = '';
+  if (g.status === 'finished') {
+    status = g.winner === 0 ? '🤝 Unentschieden!' : `🏆 ${coloredNameHtml(g.players[g.winner - 1])} hat gewonnen!`;
+  } else if (myTurn) {
+    status = '<strong>Du bist dran</strong> – tippe auf ein freies Feld.';
+  } else if (isActive) {
+    status = `${coloredNameHtml(g.players[g.turn - 1])} ist dran …`;
+  }
+
+  let actions = '';
+  if (isActive && myIdx >= 0) {
+    actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+  } else if (g.status === 'finished' && myIdx >= 0) {
+    actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
+  }
+
+  el.innerHTML = `
+    <div class="c4-players">${chip(0)}<span class="c4-vs">gegen</span>${chip(1)}</div>
+    <div class="c4-status">${status}</div>
+    <div class="ttt-board">${cells}</div>
+    <div class="c4-actions">${actions}</div>`;
+
+  el.querySelectorAll('[data-ttt-cell]').forEach((b) => b.addEventListener('click', () => tttPlayMove(g.id, parseInt(b.dataset.tttCell, 10))));
   bindResignAndRematch(el, g, myIdx);
 }
 
