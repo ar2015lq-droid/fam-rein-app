@@ -2091,14 +2091,16 @@ const GAME_FINISHED_KEEP_DAYS = 7;
 const GAME_TYPES = {
   connect4: { label: '4 Gewinnt', icon: '🔴', subtitle: 'Zu zweit, abwechselnd Steine einwerfen' },
   chess: { label: 'Schach', icon: '♟️', subtitle: 'Der Klassiker – mit Remis-Angebot' },
-  tictactoe: { label: 'Tic Tac Toe', icon: '⭕', subtitle: 'Drei in einer Reihe gewinnt' }
+  tictactoe: { label: 'Tic Tac Toe', icon: '⭕', subtitle: 'Drei in einer Reihe gewinnt' },
+  kniffel: { label: 'Kniffel', icon: '🎲', subtitle: 'Würfeln, Felder füllen, Punkte sammeln' }
 };
 
 let gamesRaw = [];                                   // alle Partien (alle Spiele), an denen ich beteiligt bin
 let gameStatsAll = {
   connect4: { wins: {}, draws: {}, lastWin: null },
   chess: { wins: {}, draws: {}, lastWin: null },
-  tictactoe: { wins: {}, draws: {}, lastWin: null }
+  tictactoe: { wins: {}, draws: {}, lastWin: null },
+  kniffel: { wins: {}, draws: {}, lastWin: null }
 };
 let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
 let gamesType = 'connect4';                          // welches Spiel in der Übersicht gezeigt wird
@@ -2108,6 +2110,7 @@ let c4AnimKey = '';
 let gameBusy = false;
 let gameOpenAfterAccept = null;
 let chSel = null;                                    // Schach: { gameId, moves, from, promoTo }
+let knUi = { gameId: null, turnsDone: -1, held: [false, false, false, false, false] };   // Kniffel: behaltene Würfel (nur lokal)
 
 // <GAMES-LOGIC-START>
 
@@ -2426,6 +2429,99 @@ function tttIsFull(board) {
   return board.every((v) => v !== 0);
 }
 
+// ----- Kniffel: reine Spiellogik -----
+const KN_UPPER = ['ones', 'twos', 'threes', 'fours', 'fives', 'sixes'];
+const KN_LOWER = ['threeKind', 'fourKind', 'fullHouse', 'smallStraight', 'largeStraight', 'kniffel', 'chance'];
+const KN_BOXES = KN_UPPER.concat(KN_LOWER);
+const KN_LABELS = {
+  ones: 'Einser', twos: 'Zweier', threes: 'Dreier', fours: 'Vierer', fives: 'Fünfer', sixes: 'Sechser',
+  threeKind: 'Dreierpasch', fourKind: 'Viererpasch', fullHouse: 'Full House', smallStraight: 'Kleine Straße',
+  largeStraight: 'Große Straße', kniffel: 'Kniffel', chance: 'Chance'
+};
+const KN_TURNS = 26;              // 13 Felder pro Spieler, 2 Spieler
+const KN_BONUS_LIMIT = 63;        // ab so vielen Punkten im oberen Teil gibt es den Bonus
+const KN_BONUS_POINTS = 35;
+const KN_EXTRA_KNIFFEL = 100;     // Bonus für jeden weiteren Kniffel (wenn im Kniffel-Feld 50 stehen)
+
+function knCounts(dice) {
+  const counts = [0, 0, 0, 0, 0, 0, 0];
+  dice.forEach((d) => { counts[d] += 1; });
+  return counts;
+}
+
+function knSum(dice) {
+  return dice.reduce((a, b) => a + b, 0);
+}
+
+function knIsKniffel(dice) {
+  return dice.length === 5 && dice[0] > 0 && dice.every((d) => d === dice[0]);
+}
+
+// Punkte eines Wurfs in einem Feld – immer nach den normalen Regeln
+// (auch ein weiterer Kniffel zählt z.B. nicht als Full House oder Straße).
+function knScoreBox(dice, box) {
+  const counts = knCounts(dice);
+  const maxCount = Math.max(...counts.slice(1));
+  const upperIdx = KN_UPPER.indexOf(box);
+  if (upperIdx >= 0) return counts[upperIdx + 1] * (upperIdx + 1);
+  const has = (values) => values.every((v) => counts[v] > 0);
+  switch (box) {
+    case 'threeKind': return maxCount >= 3 ? knSum(dice) : 0;
+    case 'fourKind': return maxCount >= 4 ? knSum(dice) : 0;
+    case 'fullHouse': return (counts.includes(3) && counts.includes(2)) ? 25 : 0;
+    case 'smallStraight': return (has([1, 2, 3, 4]) || has([2, 3, 4, 5]) || has([3, 4, 5, 6])) ? 30 : 0;
+    case 'largeStraight': return (has([1, 2, 3, 4, 5]) || has([2, 3, 4, 5, 6])) ? 40 : 0;
+    case 'kniffel': return knIsKniffel(dice) ? 50 : 0;
+    case 'chance': return knSum(dice);
+    default: return 0;
+  }
+}
+
+// Jeder Wurf darf in jedes noch freie Feld eingetragen werden – auch ein weiterer Kniffel.
+function knFreeBoxes(card) {
+  return KN_BOXES.filter((b) => card[b] === undefined);
+}
+
+// 100 Bonuspunkte für jeden weiteren Kniffel, sobald im Kniffel-Feld 50 Punkte stehen
+// (bei einem gestrichenen Kniffel-Feld mit 0 gibt es keinen Bonus). Der Wurf wird danach
+// ganz normal in ein freies Feld eingetragen.
+function knExtraBonusFor(dice, card) {
+  return knIsKniffel(dice) && card.kniffel === 50 ? KN_EXTRA_KNIFFEL : 0;
+}
+
+function knUpperSum(card) {
+  return KN_UPPER.reduce((s, b) => s + (card[b] || 0), 0);
+}
+
+function knUpperBonus(card) {
+  return knUpperSum(card) >= KN_BONUS_LIMIT ? KN_BONUS_POINTS : 0;
+}
+
+function knLowerSum(card) {
+  return KN_LOWER.reduce((s, b) => s + (card[b] || 0), 0);
+}
+
+function knTotal(card, extra) {
+  return knUpperSum(card) + knUpperBonus(card) + knLowerSum(card) + (extra || 0);
+}
+
+// Würfel: gleichmäßig verteilt (Rejection-Sampling), nach Möglichkeit mit dem Zufallsgenerator des Browsers.
+function kniffelDefaultDie() {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const buf = new Uint32Array(1);
+    let x;
+    do { crypto.getRandomValues(buf); x = buf[0]; } while (x >= 4294967292);   // 4294967292 = 6 * 715827882
+    return (x % 6) + 1;
+  }
+  return Math.floor(Math.random() * 6) + 1;
+}
+
+let kniffelRoller = kniffelDefaultDie;
+
+function kniffelDie() {
+  return kniffelRoller();
+}
+
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
 async function gameTry(fn, okMessage) {
   if (gameBusy) return false;
@@ -2474,6 +2570,12 @@ function gameInitialFields(type) {
   }
   if (type === 'tictactoe') {
     return { board: new Array(9).fill(0), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
+  }
+  if (type === 'kniffel') {
+    return {
+      turn: 1, winner: 0, moves: 0, turnsDone: 0, dice: [0, 0, 0, 0, 0], rollsLeft: 3, lastRolled: [false, false, false, false, false],
+      card1: {}, card2: {}, extra1: 0, extra2: 0, lastBox: '', lastBoxPlayer: 0, lastPoints: 0, lastBonus: 0, reason: ''
+    };
   }
   return { board: c4NewBoard(), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
 }
@@ -2607,6 +2709,81 @@ function tttPlayMove(gameId, idx) {
       if (winCells) gameApplyResult(tx, ref, g, base, myNum, { winCells });
       else if (tttIsFull(board)) gameApplyResult(tx, ref, g, base, 0, { winCells: [] });
       else tx.update(ref, { ...base, turn: myNum === 1 ? 2 : 1, updatedAt: FieldValue.serverTimestamp() });
+    });
+  });
+}
+
+// Würfeln: Der Wurf wird in der Datenbank gespeichert (nicht im Browser), damit Neuladen keinen neuen Wurf bringt.
+function kniffelRoll(gameId, held) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'kniffel') throw new Error('Das ist keine Kniffel-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      if (g.turn !== myIdx + 1) throw new Error('Du bist nicht dran.');
+      const rollsLeft = typeof g.rollsLeft === 'number' ? g.rollsLeft : 3;
+      if (rollsLeft <= 0) throw new Error('Du hast schon dreimal gewürfelt – trage jetzt Punkte ein.');
+      const first = rollsLeft === 3;
+      const keep = (!first && Array.isArray(held) && held.length === 5) ? held.map(Boolean) : [false, false, false, false, false];
+      if (keep.every(Boolean)) throw new Error('Lass mindestens einen Würfel zum Neuwürfeln frei.');
+      const dice = (g.dice || [0, 0, 0, 0, 0]).slice();
+      const rolled = keep.map((k) => !k);
+      for (let i = 0; i < 5; i++) if (rolled[i]) dice[i] = kniffelDie();
+      tx.update(ref, {
+        dice, rollsLeft: rollsLeft - 1, lastRolled: rolled, moves: (g.moves || 0) + 1, updatedAt: FieldValue.serverTimestamp()
+      });
+    });
+  });
+}
+
+// Punkte in ein Feld eintragen: Der Wert wird aus den gespeicherten Würfeln berechnet,
+// geprüft werden Zugrecht und freies Feld. Nach dem 26. Eintrag ist die Partie zu Ende.
+function kniffelScore(gameId, box) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'kniffel') throw new Error('Das ist keine Kniffel-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
+      const dice = g.dice || [0, 0, 0, 0, 0];
+      if (!dice.every((d) => d >= 1 && d <= 6)) throw new Error('Würfle zuerst.');
+      if (!KN_BOXES.includes(box)) throw new Error('Unbekanntes Feld.');
+      const cardKey = 'card' + myNum;
+      const extraKey = 'extra' + myNum;
+      const card = { ...(g[cardKey] || {}) };
+      if (card[box] !== undefined) throw new Error('Dieses Feld ist schon belegt.');
+      const points = knScoreBox(dice, box);
+      const bonus = knExtraBonusFor(dice, card);
+      card[box] = points;
+      const extra = (g[extraKey] || 0) + bonus;
+      const done = (g.turnsDone || 0) + 1;
+      const base = {
+        [cardKey]: card, [extraKey]: extra, turnsDone: done, moves: (g.moves || 0) + 1,
+        lastBox: box, lastBoxPlayer: myNum, lastPoints: points, lastBonus: bonus
+      };
+      if (done >= KN_TURNS) {
+        const cards = [myNum === 1 ? card : (g.card1 || {}), myNum === 2 ? card : (g.card2 || {})];
+        const extras = [myNum === 1 ? extra : (g.extra1 || 0), myNum === 2 ? extra : (g.extra2 || 0)];
+        const t1 = knTotal(cards[0], extras[0]);
+        const t2 = knTotal(cards[1], extras[1]);
+        gameApplyResult(tx, ref, g, { ...base, rollsLeft: 0 }, t1 > t2 ? 1 : (t2 > t1 ? 2 : 0), { reason: 'finished', total1: t1, total2: t2 });
+      } else {
+        tx.update(ref, {
+          ...base, turn: myNum === 1 ? 2 : 1, dice: [0, 0, 0, 0, 0], rollsLeft: 3,
+          lastRolled: [false, false, false, false, false], updatedAt: FieldValue.serverTimestamp()
+        });
+      }
     });
   });
 }
@@ -2842,6 +3019,7 @@ function renderGames() {
       const type = gameTypeOf(g);
       if (type === 'chess') renderChessBoard(el, titleEl, g);
       else if (type === 'tictactoe') renderTttBoard(el, titleEl, g);
+      else if (type === 'kniffel') renderKniffelBoard(el, titleEl, g);
       else renderC4Board(el, titleEl, g);
       return;
     }
@@ -3145,6 +3323,168 @@ function renderTttBoard(el, titleEl, g) {
     <div class="c4-actions">${actions}</div>`;
 
   el.querySelectorAll('[data-ttt-cell]').forEach((b) => b.addEventListener('click', () => tttPlayMove(g.id, parseInt(b.dataset.tttCell, 10))));
+  bindResignAndRematch(el, g, myIdx);
+}
+
+// ----- Kniffel: Spielbrett (Würfel als Grafik, Punktetabelle mit beiden Spielern) -----
+const KN_PIPS = {
+  1: [[50, 50]],
+  2: [[28, 28], [72, 72]],
+  3: [[28, 28], [50, 50], [72, 72]],
+  4: [[28, 28], [72, 28], [28, 72], [72, 72]],
+  5: [[28, 28], [72, 28], [50, 50], [28, 72], [72, 72]],
+  6: [[28, 26], [72, 26], [28, 50], [72, 50], [28, 74], [72, 74]]
+};
+
+function knDieSvg(v) {
+  const content = v
+    ? KN_PIPS[v].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="9" fill="#1b2328"/>`).join('')
+    : `<text x="50" y="64" text-anchor="middle" font-size="44" fill="#7d8b91">?</text>`;
+  return `<svg viewBox="0 0 100 100" aria-hidden="true"><rect x="4" y="4" width="92" height="92" rx="18" fill="${v ? '#F3EFE6' : '#C9D0D2'}" stroke="rgba(0,0,0,0.35)" stroke-width="3"/>${content}</svg>`;
+}
+
+// Welche Würfel ich für den nächsten Wurf behalten will (nur lokal, wird beim Würfeln mitgeschickt)
+function knSyncUi(g) {
+  if (knUi.gameId !== g.id || knUi.turnsDone !== (g.turnsDone || 0)) {
+    knUi = { gameId: g.id, turnsDone: g.turnsDone || 0, held: [false, false, false, false, false] };
+  }
+}
+
+async function knEnterBox(g, box, points, bonus) {
+  const label = KN_LABELS[box];
+  let text = points === 0
+    ? `0 Punkte in „${label}“ eintragen? Das Feld wird gestrichen.`
+    : `${points} Punkte in „${label}“ eintragen?`;
+  if (bonus) text += ` Dazu gibt es ${bonus} Bonuspunkte für den Zusatz-Kniffel.`;
+  const ok = await confirmModal('Punkte eintragen?', text, 'Eintragen');
+  if (ok) kniffelScore(g.id, box);
+}
+
+function renderKniffelBoard(el, titleEl, g) {
+  titleEl.textContent = GAME_TYPES.kniffel.label;
+  const myIdx = gamePlayerIndex(g, currentUser.name);
+  const styles = gameStoneStyles(g);
+  knSyncUi(g);
+
+  const isActive = g.status === 'active';
+  const myTurn = isActive && myIdx >= 0 && g.turn === myIdx + 1;
+  const dice = g.dice || [0, 0, 0, 0, 0];
+  const rolled = dice.every((d) => d >= 1);
+  const rollsLeft = typeof g.rollsLeft === 'number' ? g.rollsLeft : 3;
+  const cards = [g.card1 || {}, g.card2 || {}];
+  const extras = [g.extra1 || 0, g.extra2 || 0];
+
+  // Nur neu zeichnen, wenn sich wirklich etwas geändert hat (sonst würde die Würfel-Animation abbrechen)
+  const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.winner, g.reason, g.players, styles, dice, rollsLeft, cards, extras,
+    knUi.held, g.lastRolled, g.lastBox, g.lastBoxPlayer]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const animate = (g.moves || 0) > 0 && c4AnimKey !== g.id + ':' + (g.moves || 0);
+  c4AnimKey = g.id + ':' + (g.moves || 0);
+
+  const canHold = myTurn && rolled && rollsLeft > 0;
+  const diceHtml = dice.map((v, i) => {
+    const held = canHold && knUi.held[i];
+    const rolling = animate && g.lastRolled && g.lastRolled[i];
+    return `<div class="kn-die-wrap">
+      <button class="kn-die ${held ? 'held' : ''} ${rolling ? 'roll' : ''}" data-kn-die="${i}" ${canHold ? '' : 'disabled'}
+        aria-label="Würfel ${i + 1}: ${v || 'noch nicht gewürfelt'}${held ? ', behalten' : ''}">${knDieSvg(v)}</button>
+      <span class="kn-die-label">${held ? 'behalten' : ''}</span>
+    </div>`;
+  }).join('');
+
+  const allHeld = rolled && knUi.held.every(Boolean);
+  let rollHtml = '';
+  if (myTurn) {
+    const label = rollsLeft === 3 ? 'Würfeln' : (rollsLeft > 0 ? `Nochmal würfeln (${rollsLeft} übrig)` : 'Keine Würfe mehr');
+    rollHtml = `<div class="kn-roll-row"><button class="btn btn-primary" id="kn-roll-btn" ${(rollsLeft > 0 && !allHeld) ? '' : 'disabled'}>${label}</button></div>`;
+  }
+
+  // Punktetabelle
+  const myCard = myIdx >= 0 ? cards[myIdx] : {};
+  const allowed = (myTurn && rolled) ? knFreeBoxes(myCard) : [];
+  const cell = (p, box) => {
+    const val = cards[p][box];
+    const last = g.lastBox === box && g.lastBoxPlayer === p + 1 ? ' last' : '';
+    if (val !== undefined) return `<td class="kn-filled${last}">${val}</td>`;
+    if (p === myIdx && allowed.includes(box)) {
+      const pts = knScoreBox(dice, box);
+      return `<td class="kn-open"><button class="kn-pick${pts === 0 ? ' zero' : ''}" data-kn-box="${box}" data-kn-pts="${pts}">${pts}</button></td>`;
+    }
+    return `<td class="kn-empty"></td>`;
+  };
+  const boxRow = (box) => `<tr><th scope="row">${KN_LABELS[box]}</th>${cell(0, box)}${cell(1, box)}</tr>`;
+  const sumRow = (label, a, b, cls) => `<tr class="kn-sum ${cls || ''}"><th scope="row">${label}</th><td>${a}</td><td>${b}</td></tr>`;
+  const upperSums = cards.map(knUpperSum);
+  const totals = cards.map((c, i) => knTotal(c, extras[i]));
+  const bonusText = (p) => (upperSums[p] >= KN_BONUS_LIMIT ? `+${KN_BONUS_POINTS}` : '–');
+  const tableHtml = `<table class="kn-table">
+    <thead><tr><th></th><th>${coloredNameHtml(g.players[0])}</th><th>${coloredNameHtml(g.players[1])}</th></tr></thead>
+    <tbody>
+      ${KN_UPPER.map(boxRow).join('')}
+      ${sumRow('Summe oben', `${upperSums[0]} / ${KN_BONUS_LIMIT}`, `${upperSums[1]} / ${KN_BONUS_LIMIT}`)}
+      ${sumRow(`Bonus (ab ${KN_BONUS_LIMIT})`, bonusText(0), bonusText(1))}
+      ${KN_LOWER.map(boxRow).join('')}
+      ${sumRow(`Zusatz-Kniffel (je +${KN_EXTRA_KNIFFEL})`, extras[0] ? `+${extras[0]}` : '–', extras[1] ? `+${extras[1]}` : '–')}
+      ${sumRow('Gesamt', totals[0], totals[1], 'kn-total')}
+    </tbody></table>`;
+
+  const chip = (idx) => `
+    <div class="c4-player ${isActive && g.turn === idx + 1 ? 'turn' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}<small class="ch-side">${totals[idx]}</small>
+    </div>`;
+
+  let status = '';
+  if (g.status === 'finished') {
+    const score = `${totals[0]} : ${totals[1]}`;
+    const why = g.reason === 'resign' ? ' – Aufgabe' : '';
+    status = g.winner === 0
+      ? `🤝 Unentschieden! (${score})`
+      : `🏆 ${coloredNameHtml(g.players[g.winner - 1])} hat gewonnen! (${score})${why}`;
+  } else if (myTurn) {
+    if (rollsLeft === 3) status = '<strong>Du bist dran</strong> – würfle!';
+    else if (rollsLeft > 0) status = '<strong>Du bist dran</strong> – tippe Würfel zum Behalten an und würfle nochmal, oder wähle ein Feld.';
+    else status = '<strong>Du bist dran</strong> – wähle ein Feld für deine Punkte.';
+  } else if (isActive) {
+    const more = rolled ? ` (${rollsLeft} Wurf${rollsLeft === 1 ? '' : 'e'} übrig)` : '';
+    status = `${coloredNameHtml(g.players[g.turn - 1])} ist dran …${more}`;
+  }
+
+  let actions = '';
+  if (isActive && myIdx >= 0) {
+    actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+  } else if (g.status === 'finished' && myIdx >= 0) {
+    actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
+  }
+
+  const rules = `<details class="kn-rules"><summary>Regeln</summary><ul>
+    <li>Pro Zug bis zu 3 Würfe. Nach dem ersten Wurf tippst du die Würfel an, die du behalten willst.</li>
+    <li>Oben zählen nur die Würfel mit der gewählten Zahl. Ab ${KN_BONUS_LIMIT} Punkten oben gibt es ${KN_BONUS_POINTS} Bonus.</li>
+    <li>Dreierpasch und Viererpasch: Summe aller Würfel. Full House 25, kleine Straße (4 in Folge) 30, große Straße (5 in Folge) 40, Kniffel (5 gleiche) 50, Chance: Summe aller Würfel.</li>
+    <li>Passt nichts, streichst du ein Feld (0 Punkte).</li>
+    <li>Weiterer Kniffel: Stehen im Kniffel-Feld 50 Punkte, gibt es dafür ${KN_EXTRA_KNIFFEL} Bonuspunkte. Den Wurf trägst du danach ganz normal in ein freies Feld ein. Er zählt dort wie jeder andere Wurf, ein Kniffel ist also z.B. kein Full House.</li>
+  </ul></details>`;
+
+  el.innerHTML = `
+    <div class="c4-players">${chip(0)}<span class="c4-vs">gegen</span>${chip(1)}</div>
+    <div class="c4-status">${status}</div>
+    <div class="kn-dice">${diceHtml}</div>
+    ${rollHtml}
+    ${tableHtml}
+    <div class="c4-actions">${actions}</div>
+    ${rules}`;
+
+  el.querySelectorAll('[data-kn-die]').forEach((b) => b.addEventListener('click', () => {
+    const i = parseInt(b.dataset.knDie, 10);
+    knUi.held[i] = !knUi.held[i];
+    renderGames();
+  }));
+  const rollBtn = el.querySelector('#kn-roll-btn');
+  if (rollBtn) rollBtn.addEventListener('click', () => kniffelRoll(g.id, knUi.held.slice()));
+  el.querySelectorAll('[data-kn-box]').forEach((b) => b.addEventListener('click', () => {
+    knEnterBox(g, b.dataset.knBox, parseInt(b.dataset.knPts, 10), knExtraBonusFor(dice, myCard));
+  }));
   bindResignAndRematch(el, g, myIdx);
 }
 
