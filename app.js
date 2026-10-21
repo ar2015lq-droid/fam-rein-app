@@ -2095,7 +2095,8 @@ const GAME_TYPES = {
   chess: { label: 'Schach', icon: '♟️', subtitle: 'Der Klassiker – mit Remis-Angebot' },
   tictactoe: { label: 'Tic Tac Toe', icon: '⭕', subtitle: 'Drei in einer Reihe gewinnt' },
   kniffel: { label: 'Kniffel', icon: '🎲', subtitle: 'Würfeln, Felder füllen, Punkte sammeln' },
-  othello: { label: 'Othello', icon: '⚫', subtitle: 'Steine einklammern und umdrehen' }
+  othello: { label: 'Othello', icon: '⚫', subtitle: 'Steine einklammern und umdrehen' },
+  ships: { label: 'Schiffe versenken', icon: '🚢', subtitle: 'Flotte platzieren, Schiffe des Gegners versenken' }
 };
 
 let gamesRaw = [];                                   // alle Partien (alle Spiele), an denen ich beteiligt bin
@@ -2104,7 +2105,8 @@ let gameStatsAll = {
   chess: { wins: {}, draws: {}, lastWin: null },
   tictactoe: { wins: {}, draws: {}, lastWin: null },
   kniffel: { wins: {}, draws: {}, lastWin: null },
-  othello: { wins: {}, draws: {}, lastWin: null }
+  othello: { wins: {}, draws: {}, lastWin: null },
+  ships: { wins: {}, draws: {}, lastWin: null }
 };
 let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
 let gamesType = 'connect4';                          // welches Spiel in der Übersicht gezeigt wird
@@ -2115,6 +2117,7 @@ let gameBusy = false;
 let gameOpenAfterAccept = null;
 let chSel = null;                                    // Schach: { gameId, moves, from, promoTo }
 let knUi = { gameId: null, turnsDone: -1, held: [false, false, false, false, false] };   // Kniffel: behaltene Würfel (nur lokal)
+let shUi = { gameId: null, grid: [], selected: 1, horizontal: true };   // Schiffe versenken: Flotte beim Platzieren (nur lokal)
 let tournamentsRaw = [];                             // Turniere, die ich sehen darf (Admin: alle)
 let openTournamentId = null;
 let tnAdvanceBusy = false;
@@ -2768,6 +2771,110 @@ function tnGameDoc(t, tid, key, players, round, ts) {
   };
 }
 
+// ----- Schiffe versenken: reine Spiellogik -----
+// Feld 10 x 10, Index = Reihe * 10 + Spalte. Jeder Spieler hat ein eigenes Feld ("grid"): 0 = Wasser,
+// 1 bis 5 = Nummer des Schiffs an diesem Feld. Flotte: Schiff 1 (5 Felder), 2 (4), 3 (3), 4 (3), 5 (2).
+// Schiffe dürfen sich berühren, dürfen aber nicht übereinander liegen.
+const SH_FLEET = [5, 4, 3, 3, 2];
+const SH_LETTERS = 'ABCDEFGHIJ';
+
+function shNewGrid() {
+  return new Array(100).fill(0);
+}
+
+function shCellLabel(idx) {
+  return SH_LETTERS[idx % 10] + (Math.floor(idx / 10) + 1);
+}
+
+function shShipCells(grid, id) {
+  const cells = [];
+  grid.forEach((v, i) => { if (v === id) cells.push(i); });
+  return cells;
+}
+
+// Liegen die Felder in einer geraden, lückenlosen Linie (waagerecht oder senkrecht)?
+function shIsLine(cells) {
+  if (cells.length < 2) return false;
+  const sorted = cells.slice().sort((a, b) => a - b);
+  const sameRow = sorted.every((c) => Math.floor(c / 10) === Math.floor(sorted[0] / 10));
+  const sameCol = sorted.every((c) => c % 10 === sorted[0] % 10);
+  if (sameRow) return sorted.every((c, i) => i === 0 || c === sorted[i - 1] + 1);
+  if (sameCol) return sorted.every((c, i) => i === 0 || c === sorted[i - 1] + 10);
+  return false;
+}
+
+// Liefert '' wenn die Flotte gültig ist, sonst eine Fehlermeldung.
+function shValidateGrid(grid) {
+  if (!Array.isArray(grid) || grid.length !== 100) return 'Ungültiges Spielfeld.';
+  if (!grid.every((v) => Number.isInteger(v) && v >= 0 && v <= SH_FLEET.length)) return 'Ungültiges Spielfeld.';
+  for (let id = 1; id <= SH_FLEET.length; id++) {
+    const cells = shShipCells(grid, id);
+    if (cells.length !== SH_FLEET[id - 1]) return 'Die Flotte ist nicht vollständig.';
+    if (!shIsLine(cells)) return 'Jedes Schiff muss gerade liegen.';
+  }
+  return '';
+}
+
+// Felder, die ein Schiff belegen würde, oder null wenn es nicht passt (Rand, anderes Schiff im Weg).
+// Das Schiff mit derselben Nummer darf überschrieben werden (zum Neu-Setzen).
+function shPlacementCells(grid, id, startIdx, horizontal) {
+  const size = SH_FLEET[id - 1];
+  const row = Math.floor(startIdx / 10);
+  const col = startIdx % 10;
+  if (horizontal ? col + size > 10 : row + size > 10) return null;
+  const cells = Array.from({ length: size }, (_, k) => (horizontal ? row * 10 + col + k : (row + k) * 10 + col));
+  return cells.every((c) => grid[c] === 0 || grid[c] === id) ? cells : null;
+}
+
+// Zufällige gültige Flotte (rnd = Zufallsquelle, zum Testen austauschbar)
+function shRandomGrid(rnd) {
+  const rand = rnd || Math.random;
+  for (let tries = 0; tries < 1000; tries++) {
+    const grid = shNewGrid();
+    let complete = true;
+    for (let id = 1; id <= SH_FLEET.length && complete; id++) {
+      let placed = false;
+      for (let attempt = 0; attempt < 200 && !placed; attempt++) {
+        const horizontal = rand() < 0.5;
+        const start = Math.floor(rand() * 100);
+        const cells = shPlacementCells(grid, id, start, horizontal);
+        if (cells && cells.every((c) => grid[c] === 0)) { cells.forEach((c) => { grid[c] = id; }); placed = true; }
+      }
+      if (!placed) complete = false;
+    }
+    if (complete) return grid;
+  }
+  const fallback = shNewGrid();                                  // sollte praktisch nie nötig sein
+  SH_FLEET.forEach((size, k) => { for (let c = 0; c < size; c++) fallback[(k * 2) * 10 + c] = k + 1; });
+  return fallback;
+}
+
+// Schuss auf ein Feld: shot = bisherige Schüsse auf dieses Feld (0/1 je Feld)
+function shApplyShot(grid, shot, idx) {
+  const next = shot.slice();
+  next[idx] = 1;
+  const id = grid[idx];
+  if (!id) return { shot: next, result: 'miss', sunkId: 0, sunkSize: 0, allSunk: false };
+  const cells = shShipCells(grid, id);
+  const sunk = cells.every((c) => next[c] === 1);
+  const allSunk = SH_FLEET.every((_, k) => shShipCells(grid, k + 1).every((c) => next[c] === 1));
+  return { shot: next, result: sunk ? 'sunk' : 'hit', sunkId: sunk ? id : 0, sunkSize: sunk ? cells.length : 0, allSunk };
+}
+
+function shSunkIds(grid, shot) {
+  return SH_FLEET.map((_, k) => k + 1).filter((id) => shShipCells(grid, id).every((c) => shot[c] === 1));
+}
+
+function shShipsLeft(grid, shot) {
+  return SH_FLEET.length - shSunkIds(grid, shot).length;
+}
+
+// Von wem wird als Nächstes etwas erwartet? Meist der Spieler am Zug; beim Platzieren der Flotte alle, die noch nicht fertig sind.
+function gameWaitingOn(g) {
+  if (gameTypeOf(g) === 'ships' && g.phase === 'placing') return [1, 2].filter((n) => !g['ready' + n]);
+  return [g.turn];
+}
+
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
 async function gameTry(fn, okMessage) {
   if (gameBusy) return false;
@@ -2822,6 +2929,13 @@ function gameInitialFields(type) {
   }
   if (type === 'tictactoe') {
     return { board: new Array(9).fill(0), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
+  }
+  if (type === 'ships') {
+    return {
+      turn: 1, winner: 0, moves: 0, phase: 'placing', ready1: false, ready2: false,
+      grid1: shNewGrid(), grid2: shNewGrid(), shot1: shNewGrid(), shot2: shNewGrid(),
+      lastShot: -1, lastShotBy: 0, lastResult: '', lastSunk: 0, reason: ''
+    };
   }
   if (type === 'othello') {
     return { board: otNewBoard(), turn: 1, winner: 0, moves: 0, lastMove: -1, flipped: [], lastPass: 0, reason: '' };
@@ -3202,6 +3316,61 @@ async function tournamentDelete(tid) {
   await batch.commit();
 }
 
+// Flotte abgeben (jeder Spieler für sich, zeitversetzt möglich). Sind beide fertig, beginnt der Kampf (Spieler 1 schießt zuerst).
+function shipsPlace(gameId, grid) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'ships') throw new Error('Das ist keine Schiffe-versenken-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      if (g.phase !== 'placing') throw new Error('Die Flotten sind schon platziert.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g['ready' + myNum]) throw new Error('Du hast deine Flotte schon platziert.');
+      const problem = shValidateGrid(grid);
+      if (problem) throw new Error(problem);
+      const otherReady = !!g['ready' + (myNum === 1 ? 2 : 1)];
+      const update = { ['grid' + myNum]: grid, ['ready' + myNum]: true, moves: (g.moves || 0) + 1, updatedAt: FieldValue.serverTimestamp() };
+      if (otherReady) { update.phase = 'battle'; update.turn = 1; }
+      tx.update(ref, update);
+    });
+  }, 'Flotte steht.');
+}
+
+// Schuss auf ein Feld des Gegners. Nach einem Treffer (auch wenn das Schiff versenkt wurde) darf man nochmal schießen,
+// nach Wasser ist der andere dran. Wer das letzte Schiff versenkt, gewinnt.
+function shipsShoot(gameId, idx) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'ships') throw new Error('Das ist keine Schiffe-versenken-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      if (g.phase !== 'battle') throw new Error('Es geht erst los, wenn beide ihre Flotte platziert haben.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
+      if (!Number.isInteger(idx) || idx < 0 || idx > 99) throw new Error('Ungültiges Feld.');
+      const oppNum = myNum === 1 ? 2 : 1;
+      const shot = g['shot' + oppNum] || shNewGrid();
+      if (shot[idx]) throw new Error('Auf dieses Feld hast du schon geschossen.');
+      const r = shApplyShot(g['grid' + oppNum], shot, idx);
+      const base = {
+        ['shot' + oppNum]: r.shot, lastShot: idx, lastShotBy: myNum, lastResult: r.result, lastSunk: r.sunkSize, moves: (g.moves || 0) + 1
+      };
+      if (r.allSunk) gameApplyResult(tx, ref, g, base, myNum, { reason: 'finished' });
+      else tx.update(ref, { ...base, turn: r.result === 'miss' ? oppNum : myNum, updatedAt: FieldValue.serverTimestamp() });
+    });
+  });
+}
+
 function chessPlayMove(gameId, from, to, promo) {
   return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
@@ -3354,7 +3523,7 @@ function canonicalUserName(lower) {
 function gamesPendingInfo() {
   const me = currentUser.name.toLowerCase();
   const invites = gamesRaw.filter((g) => g.status === 'invited' && g.players[1].toLowerCase() === me);
-  const myTurn = gamesRaw.filter((g) => g.status === 'active' && g.players[g.turn - 1].toLowerCase() === me);
+  const myTurn = gamesRaw.filter((g) => g.status === 'active' && gameWaitingOn(g).includes(gamePlayerIndex(g, currentUser.name) + 1));
   const drawOffers = gamesRaw.filter((g) => g.status === 'active' && g.drawOffer
     && g.players[g.drawOffer === 1 ? 1 : 0].toLowerCase() === me);
   return { invites, myTurn, drawOffers };
@@ -3385,7 +3554,10 @@ function renderHomeGames() {
   invites.forEach((g) => lines.push(`<div class="games-hint-line">⚔️ ${coloredNameHtml(g.players[0])} fordert dich zu ${escapeHtml(gameLabel(g))} heraus</div>`));
   myTurn.forEach((g) => {
     const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
-    lines.push(`<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)} (${escapeHtml(gameLabel(g))}${g.tournamentId ? ' – Turnier' : ''})</div>`);
+    const suffix = `(${escapeHtml(gameLabel(g))}${g.tournamentId ? ' – Turnier' : ''})`;
+    lines.push(gameTypeOf(g) === 'ships' && g.phase === 'placing'
+      ? `<div class="games-hint-line">⚓ Platziere deine Flotte gegen ${coloredNameHtml(opp)} ${suffix}</div>`
+      : `<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)} ${suffix}</div>`);
   });
   drawOffers.forEach((g) => {
     const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
@@ -3444,6 +3616,7 @@ function renderGames() {
       else if (type === 'tictactoe') renderTttBoard(el, titleEl, g);
       else if (type === 'kniffel') renderKniffelBoard(el, titleEl, g);
       else if (type === 'othello') renderOthelloBoard(el, titleEl, g);
+      else if (type === 'ships') renderShipsBoard(el, titleEl, g);
       else renderC4Board(el, titleEl, g);
       if (g.tournamentId) titleEl.textContent += ' · Turnier';
       return;
@@ -3485,12 +3658,19 @@ function renderGamesMenu(el, titleEl) {
   }));
 }
 
+// Text für Karten und Listen: wer ist als Nächstes dran?
+function gameWaitingText(g, myIdx) {
+  const mine = gameWaitingOn(g).includes(myIdx + 1);
+  if (gameTypeOf(g) === 'ships' && g.phase === 'placing') return mine ? '<strong>Flotte platzieren</strong>' : 'Gegner platziert noch';
+  return mine ? '<strong>du bist dran</strong>' : 'Gegner ist dran';
+}
+
 function gamePriority(g) {
   const myIdx = gamePlayerIndex(g, currentUser.name);
   if (g.status === 'invited') return myIdx === 1 ? 0 : 3;
   if (g.status === 'active') {
     const drawForMe = g.drawOffer && g.drawOffer !== myIdx + 1;
-    return (g.turn === myIdx + 1 || drawForMe) ? 1 : 2;
+    return (gameWaitingOn(g).includes(myIdx + 1) || drawForMe) ? 1 : 2;
   }
   return 4;
 }
@@ -3510,10 +3690,9 @@ function gameCardHtml(g) {
       actions = `<button class="btn btn-secondary btn-small" data-g-decline="${g.id}">Zurückziehen</button>`;
     }
   } else if (g.status === 'active') {
-    const myTurn = g.turn === myIdx + 1;
     let extra = '';
     if (g.drawOffer) extra = g.drawOffer === myIdx + 1 ? ' · Remis angeboten' : ' · <strong>Remis-Angebot</strong>';
-    info = `Gegen ${coloredNameHtml(oppName)} – ${myTurn ? '<strong>du bist dran</strong>' : 'Gegner ist dran'}${extra}`;
+    info = `Gegen ${coloredNameHtml(oppName)} – ${gameWaitingText(g, myIdx)}${extra}`;
     actions = `<button class="btn btn-primary btn-small" data-g-open="${g.id}">Öffnen</button>`;
   } else {
     let result;
@@ -4125,8 +4304,7 @@ function renderTournamentView(el, titleEl) {
       info = tnResultHtml({ players }, r);
       if (g) action = `<button class="btn btn-secondary btn-small" data-tn-open="${g.id}">Ansehen</button>`;
     } else if (g && g.status === 'active') {
-      const mine = g.players[g.turn - 1].toLowerCase() === me.toLowerCase();
-      info = mine ? '<strong>du bist dran</strong>' : 'Gegner ist dran';
+      info = gameWaitingText(g, gamePlayerIndex(g, me));
       action = `<button class="btn btn-primary btn-small" data-tn-open="${g.id}">Öffnen</button>`;
     } else {
       info = 'noch nicht gestartet';
@@ -4237,6 +4415,193 @@ initTournamentForm();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && currentUser) tournamentsAdvanceAll();
 });
+
+// ----- Schiffe versenken: Anzeige -----
+function shSyncUi(g) {
+  if (shUi.gameId !== g.id) shUi = { gameId: g.id, grid: shNewGrid(), selected: 1, horizontal: true };
+}
+
+// 10 x 10 Feld mit Beschriftung (A-J, 1-10); cellHtml(i) liefert das Feld mit Nummer i
+function shBoardHtml(cellHtml) {
+  let html = '<div class="sh-board"><span class="sh-lbl"></span>';
+  for (let c = 0; c < 10; c++) html += `<span class="sh-lbl">${SH_LETTERS[c]}</span>`;
+  for (let r = 0; r < 10; r++) {
+    html += `<span class="sh-lbl">${r + 1}</span>`;
+    for (let c = 0; c < 10; c++) html += cellHtml(r * 10 + c);
+  }
+  return `${html}</div>`;
+}
+
+function shShipStyle(style) {
+  return `background:${style.fill};--ring:${style.ring};`;
+}
+
+function renderShipsBoard(el, titleEl, g) {
+  titleEl.textContent = GAME_TYPES.ships.label;
+  const myIdx = gamePlayerIndex(g, currentUser.name);
+  if (myIdx < 0) { el.innerHTML = '<div class="games-muted">Du spielst in dieser Partie nicht mit.</div>'; return; }
+  const myNum = myIdx + 1;
+  const oppNum = myNum === 1 ? 2 : 1;
+  const oppName = g.players[oppNum - 1];
+  const styles = gameStoneStyles(g);
+  shSyncUi(g);
+
+  const isActive = g.status === 'active';
+  const placing = isActive && g.phase === 'placing';
+  const iAmReady = !!g['ready' + myNum];
+  const myTurn = isActive && g.phase === 'battle' && g.turn === myNum;
+  const editing = placing && !iAmReady;
+
+  // Nur neu zeichnen, wenn sich wirklich etwas geändert hat
+  const sig = JSON.stringify([g.id, g.status, g.phase, g.ready1, g.ready2, g.turn, g.moves, g.winner, g.players, styles, editing ? shUi : null]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const animate = (g.moves || 0) > 0 && c4AnimKey !== g.id + ':' + (g.moves || 0);
+  c4AnimKey = g.id + ':' + (g.moves || 0);
+
+  const myGrid = g['grid' + myNum] || shNewGrid();
+  const myShots = g['shot' + myNum] || shNewGrid();
+  const oppGrid = g['grid' + oppNum] || shNewGrid();
+  const oppShots = g['shot' + oppNum] || shNewGrid();
+
+  const turnNum = isActive && g.phase === 'battle' ? g.turn : 0;
+  const chip = (idx) => {
+    const n = idx + 1;
+    const left = (g.phase === 'battle' || g.status === 'finished') ? `<small class="ch-side">${shShipsLeft(g['grid' + n] || shNewGrid(), g['shot' + n] || shNewGrid())} Schiffe</small>` : '';
+    return `
+    <div class="c4-player ${turnNum === n ? 'turn' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}${left}
+    </div>`;
+  };
+
+  let status = '';
+  let body = '';
+
+  if (editing) {
+    // ---- Flotte platzieren ----
+    const grid = shUi.grid;
+    const placed = new Set(grid.filter(Boolean));
+    const chips = SH_FLEET.map((size, k) => {
+      const id = k + 1;
+      return `<button class="sh-chip ${shUi.selected === id ? 'sel' : ''} ${placed.has(id) ? 'done' : ''}" data-sh-ship="${id}">${size}er${placed.has(id) ? ' ✓' : ''}</button>`;
+    }).join('');
+    const board = shBoardHtml((i) => {
+      const id = grid[i];
+      return `<button class="sh-cell ${id ? 'ship' : ''} ${id && id === shUi.selected ? 'sel' : ''}" data-sh-place="${i}" style="${id ? shShipStyle(styles[myIdx]) : ''}" aria-label="${shCellLabel(i)}"></button>`;
+    });
+    const complete = shValidateGrid(grid) === '';
+    status = `<strong>Platziere deine Flotte</strong> – wähle ein Schiff und tippe auf das Startfeld. Tippe ein gesetztes Schiff an, um es neu zu setzen.${g['ready' + oppNum] ? ` ${coloredNameHtml(oppName)} ist schon fertig.` : ''}`;
+    body = `
+      <div class="sh-chips">${chips}</div>
+      ${board}
+      <div class="c4-actions">
+        <button class="btn btn-secondary btn-small" id="sh-rotate-btn">Drehen (jetzt ${shUi.horizontal ? 'waagerecht' : 'senkrecht'})</button>
+        <button class="btn btn-secondary btn-small" id="sh-random-btn">Zufällig</button>
+        <button class="btn btn-ghost btn-small" id="sh-reset-btn">Zurücksetzen</button>
+        <button class="btn btn-primary btn-small" id="sh-done-btn" ${complete ? '' : 'disabled'}>Fertig</button>
+      </div>`;
+  } else if (placing) {
+    // ---- eigene Flotte steht, der Gegner platziert noch ----
+    status = `Deine Flotte steht. Warte, bis ${coloredNameHtml(oppName)} fertig ist …`;
+    body = `<div class="sh-title">Meine Flotte</div>${shBoardHtml((i) => {
+      const id = myGrid[i];
+      return `<div class="sh-cell ${id ? 'ship' : ''}" style="${id ? shShipStyle(styles[myIdx]) : ''}"></div>`;
+    })}`;
+  } else {
+    // ---- Kampf (oder beendet) ----
+    const mySunk = new Set(shSunkIds(myGrid, myShots));
+    const oppSunk = new Set(shSunkIds(oppGrid, oppShots));
+    const finished = g.status === 'finished';
+    const oppBoard = shBoardHtml((i) => {
+      const id = oppGrid[i];
+      const shot = oppShots[i];
+      const revealed = id && (oppSunk.has(id) || finished);
+      const classes = ['sh-cell'];
+      if (shot) classes.push(id ? 'hit' : 'miss');
+      if (revealed) classes.push('ship');
+      if (revealed && !shot) classes.push('reveal');
+      if (id && oppSunk.has(id)) classes.push('sunk');
+      if (i === g.lastShot && g.lastShotBy === myNum) classes.push(animate ? 'last pop' : 'last');
+      const style = revealed ? shShipStyle(styles[oppNum - 1]) : '';
+      const canShoot = myTurn && !shot;
+      return canShoot
+        ? `<button class="${classes.join(' ')}" data-sh-shoot="${i}" aria-label="${shCellLabel(i)}"></button>`
+        : `<div class="${classes.join(' ')}" style="${style}" aria-label="${shCellLabel(i)}"></div>`;
+    });
+    const myBoard = shBoardHtml((i) => {
+      const id = myGrid[i];
+      const shot = myShots[i];
+      const classes = ['sh-cell'];
+      if (id) classes.push('ship');
+      if (shot) classes.push(id ? 'hit' : 'miss');
+      if (id && mySunk.has(id)) classes.push('sunk');
+      if (i === g.lastShot && g.lastShotBy === oppNum) classes.push(animate ? 'last pop' : 'last');
+      return `<div class="${classes.join(' ')}" style="${id ? shShipStyle(styles[myIdx]) : ''}"></div>`;
+    });
+    body = `
+      <div class="sh-title">Feld von ${escapeHtml(oppName)} – deine Schüsse</div>
+      ${oppBoard}
+      <div class="sh-title">Meine Flotte</div>
+      ${myBoard}`;
+
+    if (finished) {
+      const why = g.reason === 'resign' ? ' – Aufgabe' : '';
+      status = `🏆 ${coloredNameHtml(g.players[g.winner - 1])} hat gewonnen!${why}`;
+    } else if (myTurn) {
+      status = '<strong>Du bist dran</strong> – tippe ein Feld des Gegners an.';
+    } else {
+      status = `${coloredNameHtml(oppName)} ist dran …`;
+    }
+    if (g.lastShot >= 0) {
+      const res = g.lastResult === 'miss' ? 'Wasser' : (g.lastResult === 'hit' ? 'Treffer!' : `Treffer – ein ${g.lastSunk}er-Schiff versenkt!`);
+      body = `<div class="games-muted" style="text-align:center;margin-bottom:8px;">${coloredNameHtml(g.players[g.lastShotBy - 1])} schoss auf ${shCellLabel(g.lastShot)}: ${res}</div>${body}`;
+    }
+  }
+
+  let actions = '';
+  if (isActive) actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+  else if (g.status === 'finished' && !g.tournamentId) actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
+
+  el.innerHTML = `
+    <div class="c4-players">${chip(0)}<span class="c4-vs">gegen</span>${chip(1)}</div>
+    <div class="c4-status">${status}</div>
+    <div class="sh-boards">${body}</div>
+    <div class="c4-actions">${actions}</div>`;
+
+  // Platzieren
+  el.querySelectorAll('[data-sh-ship]').forEach((b) => b.addEventListener('click', () => {
+    shUi.selected = parseInt(b.dataset.shShip, 10);
+    renderGames();
+  }));
+  el.querySelectorAll('[data-sh-place]').forEach((b) => b.addEventListener('click', () => {
+    const idx = parseInt(b.dataset.shPlace, 10);
+    const hit = shUi.grid[idx];
+    if (hit) {                                              // gesetztes Schiff antippen = aufnehmen
+      shUi.grid = shUi.grid.map((v) => (v === hit ? 0 : v));
+      shUi.selected = hit;
+      renderGames();
+      return;
+    }
+    if (!shUi.selected) { toast('Wähle zuerst ein Schiff aus.'); return; }
+    const cells = shPlacementCells(shUi.grid, shUi.selected, idx, shUi.horizontal);
+    if (!cells) { toast('Hier passt das Schiff nicht.'); return; }
+    const next = shUi.grid.map((v) => (v === shUi.selected ? 0 : v));
+    cells.forEach((c) => { next[c] = shUi.selected; });
+    shUi.grid = next;
+    const open = SH_FLEET.map((_, k) => k + 1).find((id) => !next.includes(id));   // nächstes noch freies Schiff
+    shUi.selected = open || 0;
+    renderGames();
+  }));
+  const on = (id, fn) => { const b = el.querySelector(id); if (b) b.addEventListener('click', fn); };
+  on('#sh-rotate-btn', () => { shUi.horizontal = !shUi.horizontal; renderGames(); });
+  on('#sh-random-btn', () => { shUi.grid = shRandomGrid(); shUi.selected = 0; renderGames(); });
+  on('#sh-reset-btn', () => { shUi.grid = shNewGrid(); shUi.selected = 1; renderGames(); });
+  on('#sh-done-btn', () => { if (shValidateGrid(shUi.grid) === '') shipsPlace(g.id, shUi.grid.slice()); });
+  // Schießen
+  el.querySelectorAll('[data-sh-shoot]').forEach((b) => b.addEventListener('click', () => shipsShoot(g.id, parseInt(b.dataset.shShoot, 10))));
+  bindResignAndRematch(el, g, myIdx);
+}
 
 function bindResignAndRematch(el, g, myIdx) {
   const resignBtn = el.querySelector('#g-resign-btn');

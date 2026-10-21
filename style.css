@@ -434,6 +434,28 @@ a { color: inherit; }
 @keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
 .c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
+/* ---------- Schiffe versenken ---------- */
+.sh-boards { display: flex; flex-direction: column; align-items: stretch; }
+.sh-title { font-size: 0.85rem; color: var(--text-muted); margin: 10px 0 4px; text-align: center; }
+.sh-board { display: grid; grid-template-columns: 1.4em repeat(10, 1fr); gap: 2px; width: 100%; max-width: 360px; margin: 0 auto; background: #1a2328; padding: 6px; border-radius: 10px; box-sizing: border-box; }
+.sh-lbl { font-size: 0.62rem; color: #9fb0b8; display: flex; align-items: center; justify-content: center; }
+.sh-cell { aspect-ratio: 1; background: #33444d; border: none; border-radius: 3px; padding: 0; position: relative; display: block; cursor: default; appearance: none; -webkit-appearance: none; }
+button.sh-cell { cursor: pointer; }
+button.sh-cell[data-sh-shoot]:hover { background: #40545f; }
+.sh-cell.ship { box-shadow: inset 0 0 0 2px var(--ring, transparent); }
+.sh-cell.sel { outline: 2px solid var(--accent-gold); outline-offset: -2px; }
+.sh-cell.miss::after { content: ''; position: absolute; inset: 36%; border-radius: 50%; background: rgba(255, 255, 255, 0.55); }
+.sh-cell.hit::after { content: '✕'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #ff5a4d; font-weight: 700; font-size: 0.9rem; text-shadow: 0 0 2px #000; }
+.sh-cell.sunk { filter: brightness(0.7); }
+.sh-cell.reveal { opacity: 0.55; }
+.sh-cell.last { outline: 2px solid rgba(255, 221, 87, 0.95); outline-offset: -2px; }
+.sh-cell.pop { animation: sh-pop 0.35s ease-out; }
+@keyframes sh-pop { from { transform: scale(1.35); } to { transform: scale(1); } }
+.sh-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin: 0 0 10px; }
+.sh-chip { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-alt); color: var(--text); font-size: 0.85rem; cursor: pointer; }
+.sh-chip.sel { border-color: var(--accent-gold); font-weight: 700; }
+.sh-chip.done { opacity: 0.6; }
+
 /* ---------- Turniere ---------- */
 .tn-tile small + small { margin-top: 2px; }
 .tn-head { border-left: 4px solid var(--accent-gold); }
