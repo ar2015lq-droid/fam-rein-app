@@ -2092,7 +2092,8 @@ const GAME_TYPES = {
   connect4: { label: '4 Gewinnt', icon: '🔴', subtitle: 'Zu zweit, abwechselnd Steine einwerfen' },
   chess: { label: 'Schach', icon: '♟️', subtitle: 'Der Klassiker – mit Remis-Angebot' },
   tictactoe: { label: 'Tic Tac Toe', icon: '⭕', subtitle: 'Drei in einer Reihe gewinnt' },
-  kniffel: { label: 'Kniffel', icon: '🎲', subtitle: 'Würfeln, Felder füllen, Punkte sammeln' }
+  kniffel: { label: 'Kniffel', icon: '🎲', subtitle: 'Würfeln, Felder füllen, Punkte sammeln' },
+  othello: { label: 'Othello', icon: '⚫', subtitle: 'Steine einklammern und umdrehen' }
 };
 
 let gamesRaw = [];                                   // alle Partien (alle Spiele), an denen ich beteiligt bin
@@ -2100,7 +2101,8 @@ let gameStatsAll = {
   connect4: { wins: {}, draws: {}, lastWin: null },
   chess: { wins: {}, draws: {}, lastWin: null },
   tictactoe: { wins: {}, draws: {}, lastWin: null },
-  kniffel: { wins: {}, draws: {}, lastWin: null }
+  kniffel: { wins: {}, draws: {}, lastWin: null },
+  othello: { wins: {}, draws: {}, lastWin: null }
 };
 let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
 let gamesType = 'connect4';                          // welches Spiel in der Übersicht gezeigt wird
@@ -2522,6 +2524,66 @@ function kniffelDie() {
   return kniffelRoller();
 }
 
+// ----- Othello: reine Spiellogik (Index = Reihe * 8 + Spalte, Reihe 0 = oben; 1 = Spieler 1, 2 = Spieler 2) -----
+const OT_DIRS = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+
+function otNewBoard() {
+  const board = new Array(64).fill(0);
+  board[27] = 2; board[36] = 2;     // Mitte: je zwei Steine über Kreuz
+  board[28] = 1; board[35] = 1;
+  return board;
+}
+
+// Welche gegnerischen Steine würden umgedreht, wenn der Spieler auf idx setzt? ([] = Zug nicht erlaubt)
+function otFlips(board, idx, player) {
+  if (board[idx] !== 0) return [];
+  const row = idx >> 3;
+  const col = idx & 7;
+  const opp = player === 1 ? 2 : 1;
+  const flips = [];
+  for (const [dr, dc] of OT_DIRS) {
+    const line = [];
+    let r = row + dr;
+    let c = col + dc;
+    while (r >= 0 && r < 8 && c >= 0 && c < 8 && board[r * 8 + c] === opp) {
+      line.push(r * 8 + c);
+      r += dr;
+      c += dc;
+    }
+    if (line.length && r >= 0 && r < 8 && c >= 0 && c < 8 && board[r * 8 + c] === player) flips.push(...line);
+  }
+  return flips;
+}
+
+// Alle erlaubten Züge des Spielers: Feld -> umzudrehende Steine
+function otLegalMoves(board, player) {
+  const moves = new Map();
+  for (let i = 0; i < 64; i++) {
+    const flips = otFlips(board, i, player);
+    if (flips.length) moves.set(i, flips);
+  }
+  return moves;
+}
+
+function otHasMove(board, player) {
+  for (let i = 0; i < 64; i++) if (otFlips(board, i, player).length) return true;
+  return false;
+}
+
+function otApply(board, idx, player) {
+  const flips = otFlips(board, idx, player);
+  const next = board.slice();
+  next[idx] = player;
+  flips.forEach((i) => { next[i] = player; });
+  return { board: next, flips };
+}
+
+function otCount(board) {
+  const counts = { 1: 0, 2: 0 };
+  board.forEach((v) => { if (v) counts[v] += 1; });
+  return counts;
+}
+
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
 async function gameTry(fn, okMessage) {
   if (gameBusy) return false;
@@ -2570,6 +2632,9 @@ function gameInitialFields(type) {
   }
   if (type === 'tictactoe') {
     return { board: new Array(9).fill(0), turn: 1, winner: 0, winCells: [], moves: 0, lastMove: -1 };
+  }
+  if (type === 'othello') {
+    return { board: otNewBoard(), turn: 1, winner: 0, moves: 0, lastMove: -1, flipped: [], lastPass: 0, reason: '' };
   }
   if (type === 'kniffel') {
     return {
@@ -2783,6 +2848,40 @@ function kniffelScore(gameId, box) {
           ...base, turn: myNum === 1 ? 2 : 1, dice: [0, 0, 0, 0, 0], rollsLeft: 3,
           lastRolled: [false, false, false, false, false], updatedAt: FieldValue.serverTimestamp()
         });
+      }
+    });
+  });
+}
+
+// Othello-Zug. Das Passen übernimmt die App automatisch: Hat der Gegner nach dem Zug keinen erlaubten Zug,
+// ist der Ziehende nochmal dran; kann keiner mehr ziehen (oder ist das Brett voll), ist die Partie zu Ende.
+function otelloPlayMove(gameId, idx) {
+  return gameTry(async () => {
+    const ref = db.collection('games').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Partie gibt es nicht mehr.');
+      const g = snap.data();
+      if (gameTypeOf(g) !== 'othello') throw new Error('Das ist keine Othello-Partie.');
+      if (g.status !== 'active') throw new Error('Die Partie läuft nicht mehr.');
+      const myIdx = gamePlayerIndex(g, currentUser.name);
+      if (myIdx < 0) throw new Error('Du spielst in dieser Partie nicht mit.');
+      const myNum = myIdx + 1;
+      if (g.turn !== myNum) throw new Error('Du bist nicht dran.');
+      if (!Number.isInteger(idx) || idx < 0 || idx > 63) throw new Error('Ungültiges Feld.');
+      if (g.board[idx] !== 0) throw new Error('Dieses Feld ist schon belegt.');
+      const { board, flips } = otApply(g.board, idx, myNum);
+      if (!flips.length) throw new Error('Hier darfst du nicht setzen – du musst mindestens einen gegnerischen Stein einklammern.');
+      const opp = myNum === 1 ? 2 : 1;
+      const base = { board, lastMove: idx, flipped: flips, moves: (g.moves || 0) + 1 };
+      if (otHasMove(board, opp)) {
+        tx.update(ref, { ...base, turn: opp, lastPass: 0, updatedAt: FieldValue.serverTimestamp() });
+      } else if (otHasMove(board, myNum)) {
+        tx.update(ref, { ...base, turn: myNum, lastPass: opp, updatedAt: FieldValue.serverTimestamp() });
+      } else {
+        const counts = otCount(board);
+        const winner = counts[1] > counts[2] ? 1 : (counts[2] > counts[1] ? 2 : 0);
+        gameApplyResult(tx, ref, g, { ...base, lastPass: 0 }, winner, { reason: 'finished', count1: counts[1], count2: counts[2] });
       }
     });
   });
@@ -3020,6 +3119,7 @@ function renderGames() {
       if (type === 'chess') renderChessBoard(el, titleEl, g);
       else if (type === 'tictactoe') renderTttBoard(el, titleEl, g);
       else if (type === 'kniffel') renderKniffelBoard(el, titleEl, g);
+      else if (type === 'othello') renderOthelloBoard(el, titleEl, g);
       else renderC4Board(el, titleEl, g);
       return;
     }
@@ -3485,6 +3585,81 @@ function renderKniffelBoard(el, titleEl, g) {
   el.querySelectorAll('[data-kn-box]').forEach((b) => b.addEventListener('click', () => {
     knEnterBox(g, b.dataset.knBox, parseInt(b.dataset.knPts, 10), knExtraBonusFor(dice, myCard));
   }));
+  bindResignAndRematch(el, g, myIdx);
+}
+
+// ----- Othello: Spielbrett (Steine in den Nutzerfarben, erlaubte Felder sind markiert) -----
+function renderOthelloBoard(el, titleEl, g) {
+  titleEl.textContent = GAME_TYPES.othello.label;
+  const myIdx = gamePlayerIndex(g, currentUser.name);
+  const styles = gameStoneStyles(g);
+
+  // Nur neu zeichnen, wenn sich wirklich etwas geändert hat (sonst würde die Umdreh-Animation abbrechen)
+  const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.winner, g.players, styles, g.lastPass]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const animate = (g.moves || 0) > 0 && c4AnimKey !== g.id + ':' + (g.moves || 0);
+  c4AnimKey = g.id + ':' + (g.moves || 0);
+
+  const isActive = g.status === 'active';
+  const myTurn = isActive && myIdx >= 0 && g.turn === myIdx + 1;
+  const legal = myTurn ? otLegalMoves(g.board, myIdx + 1) : new Map();
+  const flipped = new Set(animate ? (g.flipped || []) : []);
+  const counts = otCount(g.board);
+
+  const cells = g.board.map((v, i) => {
+    const isLegal = legal.has(i);
+    const classes = ['ot-cell'];
+    if (isLegal) classes.push('legal');
+    if (i === g.lastMove) classes.push('last');
+    let inner = '';
+    if (v) {
+      const st = styles[v - 1];
+      const anim = flipped.has(i) ? ' flip' : (animate && i === g.lastMove ? ' pop' : '');
+      inner = `<span class="ot-disc${anim}" style="background:${st.fill};--ring:${st.ring};"></span>`;
+    } else if (isLegal) {
+      inner = `<span class="ot-hint" style="background:${styles[myIdx].fill};"></span>`;
+    }
+    return `<button class="${classes.join(' ')}" data-ot-cell="${i}" ${isLegal ? '' : 'disabled'} aria-label="Feld ${i + 1}">${inner}</button>`;
+  }).join('');
+
+  const chip = (idx) => `
+    <div class="c4-player ${isActive && g.turn === idx + 1 ? 'turn' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}<small class="ch-side">${counts[idx + 1]}</small>
+    </div>`;
+
+  let status = '';
+  if (g.status === 'finished') {
+    const score = `${counts[1]} : ${counts[2]}`;
+    const why = g.reason === 'resign' ? ' – Aufgabe' : '';
+    status = g.winner === 0
+      ? `🤝 Unentschieden! (${score})`
+      : `🏆 ${coloredNameHtml(g.players[g.winner - 1])} hat gewonnen! (${score})${why}`;
+  } else if (myTurn) {
+    status = '<strong>Du bist dran</strong> – tippe auf ein markiertes Feld.';
+  } else if (isActive) {
+    status = `${coloredNameHtml(g.players[g.turn - 1])} ist dran …`;
+  }
+  const passNote = (isActive && g.lastPass)
+    ? `<div class="games-muted" style="text-align:center;margin-bottom:10px;">${coloredNameHtml(g.players[g.lastPass - 1])} hatte keinen Zug und musste passen.</div>`
+    : '';
+
+  let actions = '';
+  if (isActive && myIdx >= 0) {
+    actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
+  } else if (g.status === 'finished' && myIdx >= 0) {
+    actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
+  }
+
+  el.innerHTML = `
+    <div class="c4-players">${chip(0)}<span class="c4-vs">gegen</span>${chip(1)}</div>
+    <div class="c4-status">${status}</div>
+    ${passNote}
+    <div class="ot-board">${cells}</div>
+    <div class="c4-actions">${actions}</div>`;
+
+  el.querySelectorAll('[data-ot-cell]').forEach((b) => b.addEventListener('click', () => otelloPlayMove(g.id, parseInt(b.dataset.otCell, 10))));
   bindResignAndRematch(el, g, myIdx);
 }
 
