@@ -278,6 +278,7 @@ function renderNavBadges() {
   );
   document.getElementById('nav-badge-chat').classList.toggle('show', hasUnreadChat);
   document.getElementById('nav-badge-ideen').classList.toggle('show', hasUnreadIdeas);
+  document.getElementById('settings-badge-ideen').classList.toggle('show', hasUnreadIdeas);
   document.getElementById('nav-badge-tasks').classList.toggle('show', hasUnreadTasks);
 }
 
@@ -296,7 +297,7 @@ document.getElementById('darkmode-toggle').addEventListener('change', (e) => {
 function showScreen(name) {
   currentScreen = name;
   document.querySelectorAll('.screen').forEach((s) => s.classList.toggle('active', s.dataset.screen === name));
-  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays' || name === 'spezial') && b.dataset.target === 'settings') || (name === 'games' && b.dataset.target === 'home')));
+  document.querySelectorAll('.nav-btn').forEach((b) => b.classList.toggle('active', b.dataset.target === name || ((name === 'admin' || name === 'birthdays' || name === 'spezial' || name === 'ideen') && b.dataset.target === 'settings')));
 
   if (name === 'home') {
     logHomeView();
@@ -3370,9 +3371,9 @@ function gamesPendingCount(type) {
 }
 
 function updateGamesBadge() {
-  const badge = document.getElementById('nav-badge-home');
+  const badge = document.getElementById('nav-badge-games');
   if (!badge || !currentUser) return;
-  badge.classList.toggle('show', gamesPendingCount() > 0 && currentScreen !== 'home' && currentScreen !== 'games');
+  badge.classList.toggle('show', gamesPendingCount() > 0 && currentScreen !== 'games');
 }
 
 // ----- Startseite: Karte "Spiele" und Karte "Letzter Sieg" -----
@@ -3394,8 +3395,9 @@ function renderHomeGames() {
     const label = (GAME_TYPES[t.game] || { label: t.game }).label;
     lines.push(`<div class="games-hint-line">🏆 Turnier ${escapeHtml(label)}: ${escapeHtml(tnPrizeLabel(t))} zu gewinnen (bis ${escapeHtml(tnRangeLabel(t).split('–').pop().slice(0, 6))})</div>`);
   });
-  const names = Object.values(GAME_TYPES).map((t) => t.label).join(', ');
-  el.innerHTML = lines.length ? lines.join('') : `<div class="games-muted">${escapeHtml(names)} &amp; mehr – tippen zum Spielen</div>`;
+  el.innerHTML = lines.join('');
+  const card = document.getElementById('home-card-spiele');
+  if (card) card.style.display = lines.length ? '' : 'none';
 }
 
 // Der allerletzte Sieg über ALLE Spiele hinweg
@@ -4410,9 +4412,6 @@ document.getElementById('games-back-btn').addEventListener('click', () => {
   renderGames();
 });
 
-// Karte auf der Startseite öffnet die Spiele-Seite
-document.getElementById('home-card-spiele').addEventListener('click', () => showScreen('games'));
-
 // <GAMES-END>
 
 // ==========================================================
@@ -5223,15 +5222,23 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
   });
 });
 
-const DEFAULT_SETTINGS_ORDER = ['darkmode', 'geburtstage', 'admin', 'spezialkalender'];
+const DEFAULT_SETTINGS_ORDER = ['darkmode', 'geburtstage', 'ideen', 'admin', 'spezialkalender'];
 let settingsOrder = DEFAULT_SETTINGS_ORDER.slice();
+
+// Fehlende Einträge (z.B. "ideen") werden an ihrer Standard-Position in eine gespeicherte Reihenfolge eingefügt,
+// unbekannte Einträge werden entfernt.
+function mergeSettingsOrder(stored) {
+  let order = Array.isArray(stored) ? stored.slice() : [];
+  order = order.filter((k) => DEFAULT_SETTINGS_ORDER.includes(k));
+  DEFAULT_SETTINGS_ORDER.forEach((k, defaultIdx) => {
+    if (!order.includes(k)) order.splice(Math.min(defaultIdx, order.length), 0, k);
+  });
+  return order;
+}
 
 function subscribeSettingsOrder() {
   return db.collection('config').doc('settingsOrder').onSnapshot((doc) => {
-    let order = (doc.exists && Array.isArray(doc.data().order)) ? doc.data().order.slice() : [];
-    DEFAULT_SETTINGS_ORDER.forEach((k) => { if (!order.includes(k)) order.push(k); });
-    order = order.filter((k) => DEFAULT_SETTINGS_ORDER.includes(k));
-    settingsOrder = order;
+    settingsOrder = mergeSettingsOrder(doc.exists ? doc.data().order : []);
     renderSettingsOrder();
   });
 }
@@ -5271,6 +5278,8 @@ document.querySelectorAll('[data-move-setting-down]').forEach((btn) => {
 document.getElementById('settings-admin-link').addEventListener('click', () => showScreen('admin'));
 document.getElementById('admin-back-btn').addEventListener('click', () => showScreen('settings'));
 document.getElementById('settings-birthdays-link').addEventListener('click', () => showScreen('birthdays'));
+document.getElementById('settings-ideen-link').addEventListener('click', () => showScreen('ideen'));
+document.getElementById('ideen-back-btn').addEventListener('click', () => showScreen('settings'));
 document.getElementById('birthdays-back-btn').addEventListener('click', () => showScreen('settings'));
 document.getElementById('settings-spezial-link').addEventListener('click', () => showScreen('spezial'));
 document.getElementById('spezial-back-btn').addEventListener('click', () => showScreen('settings'));
@@ -5295,7 +5304,7 @@ function subscribeHomeOrder() {
   });
 }
 
-const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute', spiele: '🎮 Spiele', letzterSieg: '🏆 Letzter Sieg' };
+const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute', spiele: '🎮 Spiele-Hinweise', letzterSieg: '🏆 Letzter Sieg' };
 
 function renderAdminOrderList() {
   const el = document.getElementById('admin-order-list');

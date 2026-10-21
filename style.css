@@ -380,7 +380,7 @@ a { color: inherit; }
 .cal-cell.trained { background: var(--accent-green); color: #fff; font-weight: 700; }
 
 /* ---------- Spiele (Startseiten-Karten, Spiele-Seite) ---------- */
-.games-card { --stripe: var(--accent-green); cursor: pointer; }
+.games-card { --stripe: var(--accent-green); }
 .games-card .label, .lastwin-card .label { font-weight: 600; margin-bottom: 6px; display: block; }
 .lastwin-card { --stripe: var(--accent-gold); }
 .games-hint-line { font-size: 0.88rem; margin-top: 4px; }
@@ -848,6 +848,8 @@ textarea.important-input {
   border: 2px solid var(--surface);
 }
 .nav-badge.show { display: block; }
+.inline-dot { display: none; width: 9px; height: 9px; border-radius: 50%; background: var(--accent-red); margin-left: 8px; vertical-align: middle; }
+.inline-dot.show { display: inline-block; }
 
 .task-due { font-size: 0.72rem; padding: 2px 7px; border-radius: 6px; background: var(--surface-alt); color: var(--text-muted); margin-left: 6px; display: inline-block; }
 .task-due.overdue { background: rgba(210,100,92,0.18); color: var(--accent-red); font-weight: 600; }

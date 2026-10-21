@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=23">
+<link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
 
@@ -77,7 +77,7 @@
           <div id="home-termine-content"></div>
         </div>
 
-        <div class="card games-card" id="home-card-spiele" data-order-key="spiele">
+        <div class="card games-card" id="home-card-spiele" data-order-key="spiele" style="display:none;">
           <div class="label">🎮 Spiele</div>
           <div id="home-games-content"></div>
         </div>
@@ -198,7 +198,10 @@
 
     <!-- ---------- Ideen ---------- -->
     <section class="screen" id="screen-ideen" data-screen="ideen">
-      <div class="screen-header"><h1>💡 Ideen</h1></div>
+      <div class="screen-header">
+        <h1>💡 Ideen</h1>
+        <button class="btn-icon" id="ideen-back-btn" title="Zurück">←</button>
+      </div>
       <div class="section-note">Eine Bewertung (Daumen) bringt 10 Cent, eine von Alex angenommene Idee bringt 1 Euro.</div>
       <div id="ideen-list"></div>
       <div class="add-bar">
@@ -233,6 +236,14 @@
           <div class="item-order-controls">
             <button class="btn-icon" data-move-setting-up="geburtstage">↑</button>
             <button class="btn-icon" data-move-setting-down="geburtstage">↓</button>
+          </div>
+        </div>
+
+        <div class="settings-item" id="settings-item-ideen" data-order-key="ideen">
+          <button class="btn btn-secondary" id="settings-ideen-link" style="flex:1;margin:0;">💡 Ideen<span class="inline-dot" id="settings-badge-ideen"></span></button>
+          <div class="item-order-controls">
+            <button class="btn-icon" data-move-setting-up="ideen">↑</button>
+            <button class="btn-icon" data-move-setting-down="ideen">↓</button>
           </div>
         </div>
 
@@ -301,7 +312,7 @@
       </div>
 
       <div class="tab-panel" id="admin-order">
-        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (50-Cent-Bonus, Konto, Essen, Wichtig, Krank heute, Krank-Statistik, Termine, Spiele, Letzter Sieg) auf der Startseite erscheinen.</div>
+        <div class="section-note">Lege fest, in welcher Reihenfolge die Karten (50-Cent-Bonus, Konto, Essen, Wichtig, Krank heute, Krank-Statistik, Termine, Spiele-Hinweise, Letzter Sieg) auf der Startseite erscheinen.</div>
         <ul class="order-list" id="admin-order-list"></ul>
       </div>
 
@@ -405,12 +416,12 @@
 
     <!-- ---------- Bottom Nav ---------- -->
     <nav id="bottom-nav">
-      <button class="nav-btn" data-target="home"><span class="nav-icon">🏠</span>Start<span class="nav-badge" id="nav-badge-home"></span></button>
+      <button class="nav-btn" data-target="home"><span class="nav-icon">🏠</span>Start</button>
       <button class="nav-btn" data-target="tasks"><span class="nav-icon">📋</span>Listen<span class="nav-badge" id="nav-badge-tasks"></span></button>
       <button class="nav-btn" data-target="aktuell"><span class="nav-icon">🔔</span>Aktuell<span class="nav-badge" id="nav-badge-chat"></span></button>
       <button class="nav-btn" data-target="konto"><span class="nav-icon">🏦</span>Konto</button>
-      <button class="nav-btn" data-target="ideen"><span class="nav-icon">💡</span>Ideen<span class="nav-badge" id="nav-badge-ideen"></span></button>
-      <button class="nav-btn" data-target="settings"><span class="nav-icon">⚙️</span>Mehr</button>
+      <button class="nav-btn" data-target="games"><span class="nav-icon">🎮</span>Spiele<span class="nav-badge" id="nav-badge-games"></span></button>
+      <button class="nav-btn" data-target="settings"><span class="nav-icon">⚙️</span>Mehr<span class="nav-badge" id="nav-badge-ideen"></span></button>
     </nav>
 
   </div>
@@ -428,6 +439,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=30"></script>
+<script src="app.js?v=31"></script>
 </body>
 </html>
