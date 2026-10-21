@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=22">
+<link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
 
@@ -267,6 +267,7 @@
         <button class="tab-btn" data-tab="admin-order">Reihenfolge</button>
         <button class="tab-btn" data-tab="admin-sick">Krank</button>
         <button class="tab-btn" data-tab="admin-wichtig">Wichtig</button>
+        <button class="tab-btn" data-tab="admin-tournaments">Turniere</button>
       </div>
 
       <div class="tab-panel" id="admin-backup">
@@ -327,6 +328,22 @@
         </div>
         <div class="section-note">Klicke auf einen Tag im Kalender, um ihn als krank zu markieren oder wieder zu entfernen.</div>
         <div id="admin-sick-calendars"></div>
+      </div>
+
+      <div class="tab-panel" id="admin-tournaments">
+        <h3 style="margin-bottom:10px;">Neues Turnier</h3>
+        <div class="section-note">Jeder gegen jeden: Sieg 3 Punkte, Unentschieden 1 Punkt. Danach spielen die ersten beiden das Finale. Das Turnier erscheint bei den Teilnehmern ab dem Starttag im Bereich „Spiele“. Der Gewinn wird dem Sieger automatisch gutgeschrieben.</div>
+        <div class="appt-form-group"><label>Spiel</label><select id="tn-game"></select></div>
+        <div class="appt-inline-row">
+          <div class="appt-form-group"><label>Startdatum</label><input type="date" id="tn-start"></div>
+          <div class="appt-form-group"><label>Dauer</label><select id="tn-days"></select></div>
+          <div class="appt-form-group"><label>Gewinn</label><select id="tn-prize"></select></div>
+        </div>
+        <div class="appt-form-group"><label>Teilnehmer</label><div id="tn-participants"></div></div>
+        <button class="btn btn-primary" id="tn-create-btn">Turnier anlegen</button>
+
+        <h3 style="margin:24px 0 10px;">Turniere</h3>
+        <div id="tn-admin-list"></div>
       </div>
 
       <div class="tab-panel" id="admin-wichtig">
@@ -411,6 +428,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=28"></script>
+<script src="app.js?v=29"></script>
 </body>
 </html>

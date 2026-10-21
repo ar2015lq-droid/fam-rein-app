@@ -434,6 +434,17 @@ a { color: inherit; }
 @keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
 .c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
+/* ---------- Turniere ---------- */
+.tn-tile small + small { margin-top: 2px; }
+.tn-head { border-left: 4px solid var(--accent-gold); }
+.tn-winner { text-align: center; margin-top: 10px; background: rgba(255, 221, 87, 0.16); }
+.tn-table th, .tn-table td { text-align: center; padding: 6px 4px; }
+.tn-table .tn-name { text-align: left; }
+.tn-table .tn-pts { font-weight: 700; }
+.tn-table tr.tn-finalist td { background: rgba(255, 221, 87, 0.14); }
+.tn-check { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.92rem; }
+.tn-admin-card { margin-bottom: 12px; }
+
 /* ---------- Othello: Spielbrett ---------- */
 .ot-board { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; max-width: 420px; margin: 0 auto; background: #1a2328; padding: 6px; border-radius: 12px; }
 .ot-cell { aspect-ratio: 1; background: #33444d; border: none; border-radius: 6px; padding: 0; position: relative; display: flex; align-items: center; justify-content: center; cursor: default; appearance: none; -webkit-appearance: none; }

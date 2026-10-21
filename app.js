@@ -108,6 +108,7 @@ function subscribeUsers() {
       renderGym();
       renderSpezialKalender();
       renderLoginLogs();
+      renderAdminTournaments();
       renderGames();
       renderHomeGames();
       renderHomeLastWin();
@@ -2113,6 +2114,11 @@ let gameBusy = false;
 let gameOpenAfterAccept = null;
 let chSel = null;                                    // Schach: { gameId, moves, from, promoTo }
 let knUi = { gameId: null, turnsDone: -1, held: [false, false, false, false, false] };   // Kniffel: behaltene Würfel (nur lokal)
+let tournamentsRaw = [];                             // Turniere, die ich sehen darf (Admin: alle)
+let openTournamentId = null;
+let tnAdvanceBusy = false;
+let tnTimer = null;
+let tnFormSelected = null;                           // Admin-Formular: ausgewählte Teilnehmer
 
 // <GAMES-LOGIC-START>
 
@@ -2584,6 +2590,183 @@ function otCount(board) {
   return counts;
 }
 
+// ----- Turniere: reine Logik (Datum, Spielplan, Tabelle, Gleichstand-Regeln) -----
+const TN_WIN = 3;                 // Punkte für einen Sieg
+const TN_DRAW = 1;                // Punkte für ein Unentschieden
+const TN_SHOW_AFTER_DAYS = 7;     // so lange bleibt ein beendetes Turnier bei den Teilnehmern sichtbar
+
+function tnDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function tnParseDate(s) {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function tnAddDays(s, n) {
+  const d = tnParseDate(s);
+  d.setDate(d.getDate() + n);
+  return tnDateStr(d);
+}
+
+// Der letzte Tag, an dem noch gespielt werden darf (bei 1 Tag = der Starttag selbst)
+function tnEndDate(startDate, days) {
+  return tnAddDays(startDate, days - 1);
+}
+
+let tnTodayFn = () => tnDateStr(new Date());
+
+function tnToday() {
+  return tnTodayFn();
+}
+
+function tnRangeLabel(t) {
+  const [y1, m1, d1] = t.startDate.split('-');
+  const [y2, m2, d2] = t.endDate.split('-');
+  return t.startDate === t.endDate ? `${d1}.${m1}.${y1}` : `${d1}.${m1}.–${d2}.${m2}.${y2}`;
+}
+
+function tnPrizeLabel(t) {
+  return `${t.prize} €`;
+}
+
+function tnPrizeReason(t) {
+  return `Turniersieg: ${(GAME_TYPES[t.game] || { label: t.game }).label} (${tnRangeLabel(t)})`;
+}
+
+function tnGameId(tid, key) {
+  return 't_' + tid + '_' + key;
+}
+
+// Jeder gegen jeden. Wer beginnt (Spieler 1), wird möglichst gleichmäßig verteilt.
+function tnFixtures(participants) {
+  const fixtures = [];
+  let k = 0;
+  for (let i = 0; i < participants.length; i++) {
+    for (let j = i + 1; j < participants.length; j++) {
+      const swap = (i + j) % 2 === 1;
+      fixtures.push({ key: 'f' + k, players: swap ? [participants[j], participants[i]] : [participants[i], participants[j]] });
+      k += 1;
+    }
+  }
+  return fixtures;
+}
+
+// Ergebnis eines Spiels zählt nur, wenn es einen Sieger (1/2) oder ein Unentschieden (0) gibt; -1 = gestrichen.
+function tnCounts(result) {
+  return !!result && (result.winner === 0 || result.winner === 1 || result.winner === 2);
+}
+
+function tnStandings(participants, fixtures, results) {
+  const rows = {};
+  participants.forEach((n) => { rows[n] = { name: n, played: 0, wins: 0, draws: 0, losses: 0, points: 0 }; });
+  fixtures.forEach((f) => {
+    const r = (results || {})[f.key];
+    if (!tnCounts(r)) return;
+    const [a, b] = f.players;
+    rows[a].played += 1;
+    rows[b].played += 1;
+    if (r.winner === 0) {
+      rows[a].draws += 1; rows[b].draws += 1;
+      rows[a].points += TN_DRAW; rows[b].points += TN_DRAW;
+    } else {
+      const w = f.players[r.winner - 1];
+      const l = f.players[r.winner === 1 ? 1 : 0];
+      rows[w].wins += 1; rows[l].losses += 1;
+      rows[w].points += TN_WIN;
+    }
+  });
+  return rows;
+}
+
+// Fester "Zufall": hängt nur vom Startwert des Turniers und vom Namen ab, ist also bei jedem Aufruf gleich.
+function tnHash(seed, name) {
+  const s = String(seed) + ':' + String(name).toLowerCase();
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+// Reihenfolge der Tabelle:
+// 1. Punkte
+// 2. bei Gleichstand: direkter Vergleich (Punkte aus den Spielen der Gleichplatzierten gegeneinander)
+// 3. dann: wer in der normalen Tabelle des Spiels öfter gegen den anderen gewonnen hat (duelWins = Statistik "gewinner|verlierer")
+// 4. dann: fester Zufall
+function tnRanking(t, duelWins) {
+  const fixtures = tnFixtures(t.participants);
+  const results = t.results || {};
+  const stand = tnStandings(t.participants, fixtures, results);
+  const wins = duelWins || {};
+
+  const directPoints = (names) => {
+    const pts = Object.fromEntries(names.map((n) => [n, 0]));
+    fixtures.forEach((f) => {
+      const r = results[f.key];
+      if (!tnCounts(r)) return;
+      const [a, b] = f.players;
+      if (!names.includes(a) || !names.includes(b)) return;
+      if (r.winner === 0) { pts[a] += TN_DRAW; pts[b] += TN_DRAW; } else pts[f.players[r.winner - 1]] += TN_WIN;
+    });
+    return pts;
+  };
+  const duelNet = (names) => Object.fromEntries(names.map((n) => [n, names.reduce((sum, m) => {
+    if (m === n) return sum;
+    return sum + (wins[n.toLowerCase() + '|' + m.toLowerCase()] || 0) - (wins[m.toLowerCase() + '|' + n.toLowerCase()] || 0);
+  }, 0)]));
+  const splitBy = (names, scores) => {
+    const groups = new Map();
+    names.forEach((n) => {
+      if (!groups.has(scores[n])) groups.set(scores[n], []);
+      groups.get(scores[n]).push(n);
+    });
+    return [...groups.entries()].sort((a, b) => b[0] - a[0]).map(([, g]) => g);
+  };
+  const breakTies = (names) => {
+    if (names.length <= 1) return names;
+    let parts = splitBy(names, directPoints(names));
+    if (parts.length === 1) parts = splitBy(names, duelNet(names));
+    if (parts.length === 1) {
+      return names.slice().sort((a, b) => (tnHash(t.seed, a) - tnHash(t.seed, b)) || a.localeCompare(b));
+    }
+    return parts.flatMap(breakTies);
+  };
+  const byPoints = splitBy(t.participants, Object.fromEntries(Object.values(stand).map((r) => [r.name, r.points])));
+  return byPoints.flatMap(breakTies);
+}
+
+function tnHasCountedResults(t) {
+  return Object.values(t.results || {}).some(tnCounts);
+}
+
+// Hat die App etwas zu erledigen (Spiele anlegen, Finale anlegen, auswerten)?
+function tnNeedsAdvance(t, today) {
+  if (!t || !t.status || t.status === 'finished' || !Array.isArray(t.participants)) return false;
+  const results = t.results || {};
+  const expired = today > t.endDate;
+  if (t.status === 'scheduled') return today >= t.startDate;
+  if (t.status === 'group') return expired || tnFixtures(t.participants).every((f) => results[f.key]);
+  if (t.status === 'final') return expired || !!results.final;
+  return false;
+}
+
+// Sieht die Person das Turnier? Nur Teilnehmer, ab dem Starttag, nach dem Ende noch einige Tage.
+function tnVisibleTo(t, name, today) {
+  if (!t || !Array.isArray(t.participants) || !t.participants.includes(name)) return false;
+  return today >= t.startDate && today <= tnAddDays(t.endDate, TN_SHOW_AFTER_DAYS);
+}
+
+function tnGameDoc(t, tid, key, players, round, ts) {
+  return {
+    type: t.game, players, pairKey: gamePairKey(players[0], players[1]), status: 'active',
+    ...gameInitialFields(t.game),
+    tournamentId: tid, fixtureKey: key, round, createdAt: ts, startedAt: ts, updatedAt: ts
+  };
+}
+
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
 async function gameTry(fn, okMessage) {
   if (gameBusy) return false;
@@ -2618,6 +2801,12 @@ function gameApplyResult(tx, gameRef, game, baseUpdate, winnerNum, extra) {
     tx.set(statsRef, {
       wins: { [winner.toLowerCase() + '|' + loser.toLowerCase()]: FieldValue.increment(1) },
       lastWin: { winner, loser, game: label, at: ts }
+    }, { merge: true });
+  }
+  // Turnierpartie: Ergebnis für die Turnier-Tabelle festhalten (Sieg in der Statistik zählt trotzdem normal)
+  if (game.tournamentId) {
+    tx.set(db.collection('tournaments').doc(game.tournamentId), {
+      results: { [game.fixtureKey]: { winner: winnerNum, p1: game.players[0], p2: game.players[1] } }
     }, { merge: true });
   }
 }
@@ -2887,6 +3076,131 @@ function otelloPlayMove(gameId, idx) {
   });
 }
 
+// ----- Turniere: Aktionen in der Datenbank -----
+
+// Turnier anlegen (nur Admin). Die Partien werden erst am Starttag automatisch angelegt.
+async function tournamentCreate({ game, startDate, days, prize, participants }) {
+  if (!GAME_TYPES[game]) throw new Error('Bitte ein Spiel wählen.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '')) throw new Error('Bitte ein Startdatum wählen.');
+  if (![1, 2, 3].includes(days)) throw new Error('Der Zeitraum beträgt 1, 2 oder 3 Tage.');
+  if (!Number.isInteger(prize) || prize < 1 || prize > 10) throw new Error('Der Gewinn muss zwischen 1 und 10 Euro liegen.');
+  const names = [...new Set(participants || [])];
+  if (names.length < 2) throw new Error('Wähle mindestens 2 Teilnehmer.');
+  const ref = db.collection('tournaments').doc();
+  await ref.set({
+    game, participants: names, startDate, days, endDate: tnEndDate(startDate, days), prize,
+    seed: Math.floor(Math.random() * 4294967296), status: 'scheduled', results: {}, ranking: [], finalists: [],
+    winner: '', endReason: '', prizeBooked: false, createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp()
+  });
+  return ref.id;
+}
+
+// Erledigt den jeweils nächsten Schritt eines Turniers. Kann von jedem Teilnehmer/Admin ausgelöst werden;
+// die Transaktion sorgt dafür, dass jeder Schritt (und die Gutschrift) nur ein einziges Mal passiert.
+//  scheduled -> group : am Starttag alle Partien (jeder gegen jeden) anlegen
+//  group -> final     : sind alle Partien gespielt, spielen Platz 1 und 2 das Finale (Platz 1 beginnt)
+//  final -> finished  : Sieger des Finales (bei Remis der Tabellenerste), Gewinn aufs Konto buchen
+//  Ende des Zeitraums : offene Partien werden gestrichen (0 Punkte, keine Statistik), kein Finale mehr,
+//                       der Tabellenerste gewinnt; wurde keine Partie gewertet, gibt es keinen Sieger.
+async function tournamentAdvance(tid) {
+  const tRef = db.collection('tournaments').doc(tid);
+  try {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(tRef);
+      if (!snap.exists) return;
+      const t = snap.data();
+      const today = tnToday();
+      if (!GAME_TYPES[t.game] || !tnNeedsAdvance(t, today)) return;
+      const ts = FieldValue.serverTimestamp();
+      const fixtures = tnFixtures(t.participants);
+      const results = { ...(t.results || {}) };
+      const expired = today > t.endDate;
+
+      // Lesen (muss vor allem Schreiben passieren): Statistik des Spiels für die Gleichstand-Regel
+      let wins = {};
+      if (t.status === 'group') {
+        const st = await tx.get(db.collection('gameStats').doc(t.game));
+        wins = st.exists ? (st.data().wins || {}) : {};
+      }
+
+      const finish = (winner, reason, extra) => {
+        tx.update(tRef, {
+          status: 'finished', winner: winner || '', endReason: reason, finishedAt: ts, prizeBooked: !!winner, ...(extra || {})
+        });
+        if (winner) {
+          const accRef = db.collection('accounts').doc(winner);
+          tx.set(accRef, { balance: FieldValue.increment(t.prize) }, { merge: true });
+          tx.set(accRef.collection('transactions').doc(), { amount: t.prize, reason: tnPrizeReason(t), auto: true, createdAt: ts });
+        }
+      };
+
+      if (t.status === 'scheduled') {
+        if (expired) { finish('', 'noGames'); return; }
+        fixtures.forEach((f) => tx.set(db.collection('games').doc(tnGameId(tid, f.key)), tnGameDoc(t, tid, f.key, f.players, 'group', ts)));
+        tx.update(tRef, { status: 'group', startedAt: ts });
+        return;
+      }
+
+      if (t.status === 'group') {
+        if (expired) {
+          fixtures.filter((f) => !results[f.key]).forEach((f) => {
+            tx.delete(db.collection('games').doc(tnGameId(tid, f.key)));
+            results[f.key] = { winner: -1, p1: f.players[0], p2: f.players[1] };
+          });
+          const merged = { ...t, results };
+          const ranking = tnRanking(merged, wins);
+          const winner = tnHasCountedResults(merged) ? ranking[0] : '';
+          finish(winner, winner ? 'deadline' : 'noGames', { results, ranking });
+          return;
+        }
+        const ranking = tnRanking(t, wins);
+        const finalists = [ranking[0], ranking[1]];
+        tx.set(db.collection('games').doc(tnGameId(tid, 'final')), tnGameDoc(t, tid, 'final', finalists, 'final', ts));
+        tx.update(tRef, { status: 'final', ranking, finalists });
+        return;
+      }
+
+      if (t.status === 'final') {
+        const ranking = t.ranking || [];
+        const fin = results.final;
+        if (fin && (fin.winner === 1 || fin.winner === 2)) {
+          finish((t.finalists || [])[fin.winner - 1], 'final');
+        } else if (fin && fin.winner === 0) {
+          finish(ranking[0], 'finalDraw');
+        } else {
+          tx.delete(db.collection('games').doc(tnGameId(tid, 'final')));
+          results.final = { winner: -1, p1: (t.finalists || [])[0], p2: (t.finalists || [])[1] };
+          finish(ranking[0], 'deadline', { results });
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Turnier-Auswertung fehlgeschlagen', err);
+  }
+}
+
+async function tournamentsAdvanceAll() {
+  if (tnAdvanceBusy) return;
+  tnAdvanceBusy = true;
+  try {
+    const today = tnToday();
+    for (const t of tournamentsRaw) {
+      if (tnNeedsAdvance(t, today)) await tournamentAdvance(t.id);
+    }
+  } finally {
+    tnAdvanceBusy = false;
+  }
+}
+
+// Turnier samt allen zugehörigen Partien löschen (eine schon gebuchte Gutschrift bleibt bestehen).
+async function tournamentDelete(tid) {
+  const gamesSnap = await db.collection('games').where('tournamentId', '==', tid).get();
+  const batch = db.batch();
+  gamesSnap.forEach((d) => batch.delete(d.ref));
+  batch.delete(db.collection('tournaments').doc(tid));
+  await batch.commit();
+}
+
 function chessPlayMove(gameId, from, to, promo) {
   return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
@@ -3067,11 +3381,15 @@ function renderHomeGames() {
   invites.forEach((g) => lines.push(`<div class="games-hint-line">⚔️ ${coloredNameHtml(g.players[0])} fordert dich zu ${escapeHtml(gameLabel(g))} heraus</div>`));
   myTurn.forEach((g) => {
     const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
-    lines.push(`<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)} (${escapeHtml(gameLabel(g))})</div>`);
+    lines.push(`<div class="games-hint-line">🎯 Du bist dran gegen ${coloredNameHtml(opp)} (${escapeHtml(gameLabel(g))}${g.tournamentId ? ' – Turnier' : ''})</div>`);
   });
   drawOffers.forEach((g) => {
     const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
     lines.push(`<div class="games-hint-line">🤝 ${coloredNameHtml(opp)} bietet dir Remis an (${escapeHtml(gameLabel(g))})</div>`);
+  });
+  myVisibleTournaments().filter((t) => t.status !== 'finished').forEach((t) => {
+    const label = (GAME_TYPES[t.game] || { label: t.game }).label;
+    lines.push(`<div class="games-hint-line">🏆 Turnier ${escapeHtml(label)}: ${escapeHtml(tnPrizeLabel(t))} zu gewinnen (bis ${escapeHtml(tnRangeLabel(t).split('–').pop().slice(0, 6))})</div>`);
   });
   const names = Object.values(GAME_TYPES).map((t) => t.label).join(', ');
   el.innerHTML = lines.length ? lines.join('') : `<div class="games-muted">${escapeHtml(names)} &amp; mehr – tippen zum Spielen</div>`;
@@ -3103,6 +3421,7 @@ function renderHomeLastWin() {
 function resetGamesView() {
   gamesView = 'menu';
   openGameId = null;
+  openTournamentId = null;
   lastBoardSig = '';
   chSel = null;
 }
@@ -3121,20 +3440,26 @@ function renderGames() {
       else if (type === 'kniffel') renderKniffelBoard(el, titleEl, g);
       else if (type === 'othello') renderOthelloBoard(el, titleEl, g);
       else renderC4Board(el, titleEl, g);
+      if (g.tournamentId) titleEl.textContent += ' · Turnier';
       return;
     }
-    gamesView = 'lobby';
+    gamesView = openTournamentId ? 'tournament' : 'lobby';
     openGameId = null;
     chSel = null;
   }
   lastBoardSig = '';
-  if (gamesView === 'menu') renderGamesMenu(el, titleEl);
+  if (gamesView === 'tournament') renderTournamentView(el, titleEl);
+  else if (gamesView === 'menu') renderGamesMenu(el, titleEl);
   else renderGameLobby(el, titleEl, gamesType);
 }
 
 function renderGamesMenu(el, titleEl) {
   titleEl.textContent = '🎮 Spiele';
-  el.innerHTML = Object.entries(GAME_TYPES).map(([type, t]) => {
+  const tns = myVisibleTournaments();
+  const tnBlock = tns.length
+    ? `<div class="games-section-title" style="margin-top:0;">🏆 Turniere</div>${tns.map(tnCardHtml).join('')}<div class="games-section-title">Spiele</div>`
+    : '';
+  el.innerHTML = tnBlock + Object.entries(GAME_TYPES).map(([type, t]) => {
     const n = gamesPendingCount(type);
     return `
     <button class="game-tile" data-open-game="${type}">
@@ -3146,6 +3471,11 @@ function renderGamesMenu(el, titleEl) {
   el.querySelectorAll('[data-open-game]').forEach((b) => b.addEventListener('click', () => {
     gamesType = b.dataset.openGame;
     gamesView = 'lobby';
+    renderGames();
+  }));
+  el.querySelectorAll('[data-open-tournament]').forEach((b) => b.addEventListener('click', () => {
+    openTournamentId = b.dataset.openTournament;
+    gamesView = 'tournament';
     renderGames();
   }));
 }
@@ -3243,6 +3573,7 @@ function gameOpenBoard(gameId) {
   if (!g) return;
   gamesType = gameTypeOf(g);
   openGameId = gameId;
+  openTournamentId = g.tournamentId || null;
   gamesView = 'board';
   lastBoardSig = '';
   chSel = null;
@@ -3254,7 +3585,7 @@ function renderGameLobby(el, titleEl, type) {
   const t = GAME_TYPES[type] || GAME_TYPES.connect4;
   titleEl.textContent = t.label;
   const me = currentUser.name;
-  const typeGames = gamesRaw.filter((g) => gameTypeOf(g) === type);
+  const typeGames = gamesRaw.filter((g) => gameTypeOf(g) === type && !g.tournamentId);
   const myGames = typeGames.slice().sort((a, b) => gamePriority(a) - gamePriority(b));
   const gamesHtml = myGames.length
     ? myGames.map(gameCardHtml).join('')
@@ -3344,7 +3675,7 @@ function renderC4Board(el, titleEl, g) {
   let actions = '';
   if (isActive && myIdx >= 0) {
     actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
-  } else if (g.status === 'finished' && myIdx >= 0) {
+  } else if (g.status === 'finished' && myIdx >= 0 && !g.tournamentId) {
     actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
   }
 
@@ -3412,7 +3743,7 @@ function renderTttBoard(el, titleEl, g) {
   let actions = '';
   if (isActive && myIdx >= 0) {
     actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
-  } else if (g.status === 'finished' && myIdx >= 0) {
+  } else if (g.status === 'finished' && myIdx >= 0 && !g.tournamentId) {
     actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
   }
 
@@ -3554,7 +3885,7 @@ function renderKniffelBoard(el, titleEl, g) {
   let actions = '';
   if (isActive && myIdx >= 0) {
     actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
-  } else if (g.status === 'finished' && myIdx >= 0) {
+  } else if (g.status === 'finished' && myIdx >= 0 && !g.tournamentId) {
     actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
   }
 
@@ -3648,7 +3979,7 @@ function renderOthelloBoard(el, titleEl, g) {
   let actions = '';
   if (isActive && myIdx >= 0) {
     actions = `<button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
-  } else if (g.status === 'finished' && myIdx >= 0) {
+  } else if (g.status === 'finished' && myIdx >= 0 && !g.tournamentId) {
     actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
   }
 
@@ -3662,6 +3993,244 @@ function renderOthelloBoard(el, titleEl, g) {
   el.querySelectorAll('[data-ot-cell]').forEach((b) => b.addEventListener('click', () => otelloPlayMove(g.id, parseInt(b.dataset.otCell, 10))));
   bindResignAndRematch(el, g, myIdx);
 }
+
+// ----- Turniere: Anzeige (Spiele-Bereich der Teilnehmer + Admin-Bereich) -----
+function subscribeTournaments() {
+  const base = db.collection('tournaments');
+  const q = isAdmin(currentUser.name) ? base : base.where('participants', 'array-contains', currentUser.name);
+  return q.onSnapshot((snap) => {
+    tournamentsRaw = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((t) => t.game && Array.isArray(t.participants));
+    renderAdminTournaments();
+    renderGames();
+    renderHomeGames();
+    setTimeout(tournamentsAdvanceAll, 200);
+  });
+}
+
+// Turniere, die die angemeldete Person sehen darf (laufende zuerst)
+function myVisibleTournaments() {
+  const today = tnToday();
+  return tournamentsRaw
+    .filter((t) => tnVisibleTo(t, currentUser.name, today))
+    .sort((a, b) => ((a.status === 'finished') - (b.status === 'finished')) || b.startDate.localeCompare(a.startDate));
+}
+
+function tnMyOpenCount(t) {
+  const me = currentUser.name.toLowerCase();
+  return gamesRaw.filter((g) => g.tournamentId === t.id && g.status === 'active' && g.players[g.turn - 1].toLowerCase() === me).length;
+}
+
+// Kurzer Statustext (Klartext, Namen werden mit escapeHtml ausgegeben)
+function tnStatusText(t) {
+  const label = (GAME_TYPES[t.game] || { label: t.game }).label;
+  if (t.status === 'finished') {
+    return t.winner ? `Sieger: ${t.winner}` : 'Beendet – kein Sieger';
+  }
+  if (t.status === 'final') return `Finale: ${(t.finalists || []).join(' gegen ')}`;
+  if (t.status === 'group') {
+    const fixtures = tnFixtures(t.participants);
+    const left = fixtures.filter((f) => !(t.results || {})[f.key]).length;
+    return `Gruppenphase – noch ${left} von ${fixtures.length} Partien offen`;
+  }
+  return `${label}: startet gleich`;
+}
+
+function tnCardHtml(t) {
+  const meta = GAME_TYPES[t.game] || { label: t.game, icon: '🎮' };
+  const open = t.status === 'finished' ? 0 : tnMyOpenCount(t);
+  return `
+    <button class="game-tile tn-tile" data-open-tournament="${t.id}">
+      <span class="game-tile-icon">🏆</span>
+      <span class="game-tile-text">
+        <strong>Turnier: ${escapeHtml(meta.label)}</strong>
+        <small>${escapeHtml(tnRangeLabel(t))} · ${escapeHtml(tnPrizeLabel(t))} zu gewinnen</small>
+        <small>${escapeHtml(tnStatusText(t))}</small>
+      </span>
+      ${open ? `<span class="game-tile-badge">${open}</span>` : ''}
+    </button>`;
+}
+
+function tnResultHtml(f, r) {
+  if (!r) return 'noch offen';
+  if (r.winner === -1) return 'gestrichen';
+  if (r.winner === 0) return 'Unentschieden';
+  return `Sieg für ${coloredNameHtml(f.players[r.winner - 1])}`;
+}
+
+const TN_REASONS = {
+  final: 'im Finale',
+  finalDraw: 'Finale remis – der Tabellenerste gewinnt',
+  deadline: 'Zeitraum abgelaufen – der Tabellenerste gewinnt',
+  noGames: 'Es wurde keine Partie gewertet'
+};
+
+// Tabelle (für Teilnehmer und Admin): Platz, Spieler, Spiele, Siege, Unentschieden, Niederlagen, Punkte
+function tnTableHtml(t) {
+  const fixtures = tnFixtures(t.participants);
+  const stand = tnStandings(t.participants, fixtures, t.results || {});
+  const order = (t.ranking && t.ranking.length) ? t.ranking : tnRanking(t, ((gameStatsAll[t.game] || {}).wins) || {});
+  const rows = order.map((name, i) => {
+    const r = stand[name];
+    const finalist = (t.finalists || []).includes(name);
+    return `<tr${finalist ? ' class="tn-finalist"' : ''}><td>${i + 1}</td><td class="tn-name">${coloredNameHtml(name)}</td><td>${r.played}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td><td class="tn-pts">${r.points}</td></tr>`;
+  }).join('');
+  return `<table class="games-table tn-table">
+    <thead><tr><th>#</th><th class="tn-name">Spieler</th><th>Sp</th><th>S</th><th>U</th><th>N</th><th>Pkt</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+function renderTournamentView(el, titleEl) {
+  const t = tournamentsRaw.find((x) => x.id === openTournamentId);
+  if (!t || !tnVisibleTo(t, currentUser.name, tnToday())) {
+    gamesView = 'menu';
+    openTournamentId = null;
+    renderGamesMenu(el, titleEl);
+    return;
+  }
+  titleEl.textContent = '🏆 Turnier';
+  const meta = GAME_TYPES[t.game] || { label: t.game, icon: '🎮' };
+  const me = currentUser.name;
+  const fixtures = tnFixtures(t.participants);
+  const results = t.results || {};
+  const gameDoc = (key) => gamesRaw.find((g) => g.id === tnGameId(t.id, key));
+
+  const head = `
+    <div class="game-card tn-head">
+      <div><strong>${meta.icon} ${escapeHtml(meta.label)}-Turnier</strong></div>
+      <div class="games-muted">${escapeHtml(tnRangeLabel(t))} · <strong>${escapeHtml(tnPrizeLabel(t))} zu gewinnen</strong></div>
+      <div style="margin-top:6px;">${escapeHtml(tnStatusText(t))}</div>
+    </div>`;
+
+  let banner = '';
+  if (t.status === 'finished') {
+    banner = t.winner
+      ? `<div class="game-card tn-winner">🏆 ${coloredNameHtml(t.winner)} gewinnt das Turnier und <strong>${escapeHtml(tnPrizeLabel(t))}</strong> (${escapeHtml(TN_REASONS[t.endReason] || '')}).</div>`
+      : `<div class="game-card tn-winner">${escapeHtml(TN_REASONS[t.endReason] || 'Beendet – kein Sieger.')}</div>`;
+  }
+
+  // Meine Partien (Gruppenphase + Finale)
+  const gameRow = (key, players, label) => {
+    const opp = players[0].toLowerCase() === me.toLowerCase() ? players[1] : players[0];
+    const g = gameDoc(key);
+    // Ist die Partie schon beendet, das Turnier-Ergebnis aber noch unterwegs, gilt das Ergebnis der Partie
+    const r = results[key] || (g && g.status === 'finished' ? { winner: g.winner } : null);
+    let info; let action = '';
+    if (r) {
+      info = tnResultHtml({ players }, r);
+      if (g) action = `<button class="btn btn-secondary btn-small" data-tn-open="${g.id}">Ansehen</button>`;
+    } else if (g && g.status === 'active') {
+      const mine = g.players[g.turn - 1].toLowerCase() === me.toLowerCase();
+      info = mine ? '<strong>du bist dran</strong>' : 'Gegner ist dran';
+      action = `<button class="btn btn-primary btn-small" data-tn-open="${g.id}">Öffnen</button>`;
+    } else {
+      info = 'noch nicht gestartet';
+    }
+    return `<div class="game-card"><div>${label ? `<strong>${label}</strong> – ` : ''}Gegen ${coloredNameHtml(opp)} – ${info}</div>${action ? `<div class="game-card-actions">${action}</div>` : ''}</div>`;
+  };
+
+  let finalHtml = '';
+  if ((t.finalists || []).length === 2) {
+    const fin = t.finalists;
+    const isFinalist = fin.some((n) => n.toLowerCase() === me.toLowerCase());
+    finalHtml = `<div class="games-section-title">Finale</div>`
+      + (isFinalist
+        ? gameRow('final', fin, 'Finale')
+        : `<div class="game-card"><div>${coloredNameHtml(fin[0])} gegen ${coloredNameHtml(fin[1])} – ${tnResultHtml({ players: fin }, results.final)}</div></div>`);
+  }
+
+  const mine = fixtures.filter((f) => f.players.some((n) => n.toLowerCase() === me.toLowerCase()));
+  const myRows = mine.map((f) => gameRow(f.key, f.players, '')).join('');
+  const others = fixtures.filter((f) => !mine.includes(f));
+  const otherRows = others.map((f) => `<div class="game-card"><div>${coloredNameHtml(f.players[0])} – ${coloredNameHtml(f.players[1])}</div><div class="games-muted">${tnResultHtml(f, results[f.key])}</div></div>`).join('');
+
+  el.innerHTML = `
+    ${head}
+    ${banner}
+    <div class="games-section-title">Tabelle</div>
+    ${tnTableHtml(t)}
+    <div class="games-muted" style="margin-top:8px;">Sieg ${TN_WIN} Punkte, Unentschieden ${TN_DRAW} Punkt. Bei Gleichstand zählt der direkte Vergleich, dann die Siege in der normalen Tabelle des Spiels, zuletzt das Los. Die ersten beiden spielen am Ende das Finale.</div>
+    ${finalHtml}
+    <div class="games-section-title">Meine Partien</div>
+    ${myRows || '<div class="games-muted">Du hast keine Partien in diesem Turnier.</div>'}
+    ${otherRows ? `<div class="games-section-title">Partien der anderen</div>${otherRows}` : ''}`;
+
+  el.querySelectorAll('[data-tn-open]').forEach((b) => b.addEventListener('click', () => gameOpenBoard(b.dataset.tnOpen)));
+}
+
+// ----- Admin: Turnier anlegen und verwalten -----
+function tnFormValue(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+
+function initTournamentForm() {
+  const gameSel = document.getElementById('tn-game');
+  const daysSel = document.getElementById('tn-days');
+  const prizeSel = document.getElementById('tn-prize');
+  const startInput = document.getElementById('tn-start');
+  const createBtn = document.getElementById('tn-create-btn');
+  if (!gameSel || !daysSel || !prizeSel || !startInput || !createBtn) return;
+  gameSel.innerHTML = Object.entries(GAME_TYPES).map(([k, v]) => `<option value="${k}">${escapeHtml(v.label)}</option>`).join('');
+  daysSel.innerHTML = [1, 2, 3].map((d) => `<option value="${d}">${d} ${d === 1 ? 'Tag' : 'Tage'}</option>`).join('');
+  prizeSel.innerHTML = Array.from({ length: 10 }, (_, i) => `<option value="${i + 1}" ${i + 1 === 5 ? 'selected' : ''}>${i + 1} €</option>`).join('');
+  startInput.value = tnToday();
+  createBtn.addEventListener('click', async () => {
+    const startDate = tnFormValue('tn-start');
+    if (startDate < tnToday()) { toast('Das Startdatum liegt in der Vergangenheit.'); return; }
+    const names = Object.values(usersMap).map((u) => u.name).filter((n) => !tnFormSelected || tnFormSelected.has(n));
+    try {
+      await tournamentCreate({
+        game: tnFormValue('tn-game'), startDate, days: parseInt(tnFormValue('tn-days'), 10),
+        prize: parseInt(tnFormValue('tn-prize'), 10), participants: names
+      });
+      toast('Turnier angelegt.');
+      setTimeout(tournamentsAdvanceAll, 300);
+    } catch (err) {
+      console.error(err);
+      toast(err && err.message ? err.message : 'Das Turnier konnte nicht angelegt werden.');
+    }
+  });
+}
+
+function renderAdminTournaments() {
+  const listEl = document.getElementById('tn-admin-list');
+  const partEl = document.getElementById('tn-participants');
+  if (!listEl || !partEl || !currentUser || !isAdmin(currentUser.name)) return;
+
+  const names = Object.values(usersMap).map((u) => u.name).sort((a, b) => a.localeCompare(b));
+  if (!tnFormSelected) tnFormSelected = new Set(names);          // zunächst sind alle ausgewählt
+  partEl.innerHTML = names.map((n) => `
+    <label class="tn-check"><input type="checkbox" data-tn-part="${escapeHtml(n)}" ${tnFormSelected.has(n) ? 'checked' : ''}> ${coloredNameHtml(n)}</label>`).join('');
+  partEl.querySelectorAll('[data-tn-part]').forEach((cb) => cb.addEventListener('change', () => {
+    if (cb.checked) tnFormSelected.add(cb.dataset.tnPart); else tnFormSelected.delete(cb.dataset.tnPart);
+  }));
+
+  const sorted = tournamentsRaw.slice().sort((a, b) => b.startDate.localeCompare(a.startDate));
+  listEl.innerHTML = sorted.length ? sorted.map((t) => {
+    const meta = GAME_TYPES[t.game] || { label: t.game, icon: '🎮' };
+    const parts = t.participants.map(coloredNameHtml).join(', ');
+    return `
+      <div class="game-card tn-admin-card">
+        <div class="game-card-top"><strong>${meta.icon} ${escapeHtml(meta.label)}</strong><span class="game-hint">${escapeHtml(tnStatusText(t))}</span></div>
+        <div class="games-muted">${escapeHtml(tnRangeLabel(t))} · ${escapeHtml(tnPrizeLabel(t))} · ${parts}</div>
+        ${t.status === 'scheduled' ? '' : `<div style="margin-top:8px;">${tnTableHtml(t)}</div>`}
+        ${t.status === 'finished' && t.winner ? `<div style="margin-top:8px;">🏆 ${coloredNameHtml(t.winner)} · ${escapeHtml(tnPrizeLabel(t))} gutgeschrieben</div>` : ''}
+        <div class="game-card-actions"><button class="btn btn-ghost btn-small" data-tn-delete="${t.id}">Löschen</button></div>
+      </div>`;
+  }).join('') : '<div class="games-muted">Noch keine Turniere angelegt.</div>';
+  listEl.querySelectorAll('[data-tn-delete]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await confirmModal('Turnier löschen?', 'Das Turnier und alle zugehörigen Partien werden entfernt. Ein bereits gutgeschriebener Gewinn bleibt auf dem Konto.');
+    if (!ok) return;
+    try { await tournamentDelete(b.dataset.tnDelete); } catch (err) { console.error(err); toast('Löschen fehlgeschlagen.'); }
+  }));
+}
+
+initTournamentForm();
+
+// App wieder im Vordergrund: anstehende Turnier-Schritte erledigen
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && currentUser) tournamentsAdvanceAll();
+});
 
 function bindResignAndRematch(el, g, myIdx) {
   const resignBtn = el.querySelector('#g-resign-btn');
@@ -3772,7 +4341,7 @@ function renderChessBoard(el, titleEl, g) {
       actions = `<button class="btn btn-secondary btn-small" id="ch-draw-offer">Remis anbieten</button>
                  <button class="btn btn-ghost btn-small" id="g-resign-btn">Aufgeben</button>`;
     }
-  } else if (g.status === 'finished' && myIdx >= 0) {
+  } else if (g.status === 'finished' && myIdx >= 0 && !g.tournamentId) {
     actions = `<button class="btn btn-primary btn-small" id="g-rematch-btn">Revanche</button>`;
   }
 
@@ -3830,7 +4399,8 @@ function chessSquareClick(g, myIdx, legal, idx) {
 
 // Zurück-Knopf: Brett -> Übersicht des Spiels -> Spiele-Menü -> Startseite
 document.getElementById('games-back-btn').addEventListener('click', () => {
-  if (gamesView === 'board') { gamesView = 'lobby'; openGameId = null; chSel = null; }
+  if (gamesView === 'board') { gamesView = openTournamentId ? 'tournament' : 'lobby'; openGameId = null; chSel = null; }
+  else if (gamesView === 'tournament') { gamesView = 'menu'; openTournamentId = null; }
   else if (gamesView === 'lobby') { gamesView = 'menu'; }
   else { showScreen('home'); return; }
   renderGames();
@@ -4579,7 +5149,7 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays', 'games', 'gameStats'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays', 'games', 'gameStats', 'tournaments'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
@@ -4776,6 +5346,9 @@ function startAppListeners() {
   unsubscribers.push(subscribeGymDays());
   unsubscribers.push(subscribeGames());
   unsubscribers.push(subscribeGameStats());
+  unsubscribers.push(subscribeTournaments());
+  tnTimer = setInterval(tournamentsAdvanceAll, 60000);
+  unsubscribers.push(() => clearInterval(tnTimer));
   unsubscribers.push(subscribeSickDays());
   unsubscribers.push(subscribeSickSettings());
   unsubscribers.push(subscribeSickCalendarOrder());
