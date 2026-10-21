@@ -3359,10 +3359,13 @@ function gamesPendingInfo() {
   return { invites, myTurn, drawOffers };
 }
 
-// Anzahl Partien, bei denen etwas auf mich wartet (optional nur für ein Spiel)
+// Anzahl Partien, bei denen etwas auf mich wartet.
+// Ohne Angabe: alle (für den Punkt am "Start"-Knopf). Mit Spiel: nur die normalen Partien dieses Spiels –
+// Turnierpartien erscheinen nur an der Turnierkarte, nicht an der Kachel des Spiels.
 function gamesPendingCount(type) {
   const { invites, myTurn, drawOffers } = gamesPendingInfo();
-  const ids = new Set([...invites, ...myTurn, ...drawOffers].filter((g) => !type || gameTypeOf(g) === type).map((g) => g.id));
+  const ids = new Set([...invites, ...myTurn, ...drawOffers]
+    .filter((g) => !type || (gameTypeOf(g) === type && !g.tournamentId)).map((g) => g.id));
   return ids.size;
 }
 
@@ -4015,9 +4018,10 @@ function myVisibleTournaments() {
     .sort((a, b) => ((a.status === 'finished') - (b.status === 'finished')) || b.startDate.localeCompare(a.startDate));
 }
 
+// Turnierpartien, bei denen etwas auf mich wartet (ich bin dran oder mir wurde Remis angeboten)
 function tnMyOpenCount(t) {
-  const me = currentUser.name.toLowerCase();
-  return gamesRaw.filter((g) => g.tournamentId === t.id && g.status === 'active' && g.players[g.turn - 1].toLowerCase() === me).length;
+  const { myTurn, drawOffers } = gamesPendingInfo();
+  return new Set([...myTurn, ...drawOffers].filter((g) => g.tournamentId === t.id).map((g) => g.id)).size;
 }
 
 // Kurzer Statustext (Klartext, Namen werden mit escapeHtml ausgegeben)
