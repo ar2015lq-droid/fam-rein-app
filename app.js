@@ -2096,7 +2096,8 @@ const GAME_TYPES = {
   tictactoe: { label: 'Tic Tac Toe', icon: '⭕', subtitle: 'Drei in einer Reihe gewinnt' },
   kniffel: { label: 'Kniffel', icon: '🎲', subtitle: 'Würfeln, Felder füllen, Punkte sammeln' },
   othello: { label: 'Othello', icon: '⚫', subtitle: 'Steine einklammern und umdrehen' },
-  ships: { label: 'Schiffe versenken', icon: '🚢', subtitle: 'Flotte platzieren, Schiffe des Gegners versenken' }
+  ships: { label: 'Schiffe versenken', icon: '🚢', subtitle: 'Flotte platzieren, Schiffe des Gegners versenken' },
+  blokus: { label: 'Blokus', icon: '🟦', subtitle: 'Für 2 bis 4 Spieler – Formen legen, Ecken berühren', multi: true }
 };
 
 let gamesRaw = [];                                   // alle Partien (alle Spiele), an denen ich beteiligt bin
@@ -2106,7 +2107,8 @@ let gameStatsAll = {
   tictactoe: { wins: {}, draws: {}, lastWin: null },
   kniffel: { wins: {}, draws: {}, lastWin: null },
   othello: { wins: {}, draws: {}, lastWin: null },
-  ships: { wins: {}, draws: {}, lastWin: null }
+  ships: { wins: {}, draws: {}, lastWin: null },
+  blokus: { wins: {}, draws: {}, played: {}, lastWin: null }
 };
 let gamesView = 'menu';                              // 'menu' | 'lobby' | 'board'
 let gamesType = 'connect4';                          // welches Spiel in der Übersicht gezeigt wird
@@ -2118,6 +2120,10 @@ let gameOpenAfterAccept = null;
 let chSel = null;                                    // Schach: { gameId, moves, from, promoTo }
 let knUi = { gameId: null, turnsDone: -1, held: [false, false, false, false, false] };   // Kniffel: behaltene Würfel (nur lokal)
 let shUi = { gameId: null, grid: [], selected: 1, horizontal: true };   // Schiffe versenken: Flotte beim Platzieren (nur lokal)
+let groupGamesRaw = [];                              // Mehrspieler-Runden (Blokus), an denen ich beteiligt bin
+let openGroupId = null;
+let blInviteSel = new Set();                         // Blokus-Lobby: ausgewählte Mitspieler
+let blUi = { gameId: null, piece: null, shape: null, at: null };   // Blokus: gewähltes Stück und Stelle (nur lokal)
 let tournamentsRaw = [];                             // Turniere, die ich sehen darf (Admin: alle)
 let openTournamentId = null;
 let tnAdvanceBusy = false;
@@ -2875,6 +2881,217 @@ function gameWaitingOn(g) {
   return [g.turn];
 }
 
+// ----- Blokus: reine Spiellogik -----
+// 2 Spieler: kleines Brett (Blokus Duo, 14 x 14), 3 oder 4 Spieler: 20 x 20 (bei 3 Spielern bleibt die vierte Farbe ungenutzt).
+// Brett: Reihe * Größe + Spalte; 0 = leer, 1 bis 4 = Nummer des Spielers (Farbe) auf dem Feld.
+// Jeder Spieler hat 21 Formstücke (89 Quadrate). Das erste Stück liegt auf dem Startfeld, jedes weitere berührt
+// einen eigenen Stein an einer Ecke, aber nie an einer Kante. An fremde Steine darf man überall anlegen.
+const BL_PIECES = {
+  I1: [[0, 0]],
+  I2: [[0, 0], [0, 1]],
+  I3: [[0, 0], [0, 1], [0, 2]],
+  V3: [[0, 0], [1, 0], [1, 1]],
+  I4: [[0, 0], [0, 1], [0, 2], [0, 3]],
+  L4: [[0, 0], [1, 0], [2, 0], [2, 1]],
+  T4: [[0, 0], [0, 1], [0, 2], [1, 1]],
+  O4: [[0, 0], [0, 1], [1, 0], [1, 1]],
+  Z4: [[0, 0], [0, 1], [1, 1], [1, 2]],
+  I5: [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]],
+  L5: [[0, 0], [1, 0], [2, 0], [3, 0], [3, 1]],
+  N5: [[0, 1], [1, 1], [2, 1], [2, 0], [3, 0]],
+  P5: [[0, 0], [0, 1], [1, 0], [1, 1], [2, 0]],
+  F5: [[0, 1], [0, 2], [1, 0], [1, 1], [2, 1]],
+  T5: [[0, 0], [0, 1], [0, 2], [1, 1], [2, 1]],
+  U5: [[0, 0], [0, 2], [1, 0], [1, 1], [1, 2]],
+  V5: [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2]],
+  W5: [[0, 0], [1, 0], [1, 1], [2, 1], [2, 2]],
+  X5: [[0, 1], [1, 0], [1, 1], [1, 2], [2, 1]],
+  Y5: [[0, 1], [1, 0], [1, 1], [2, 1], [3, 1]],
+  Z5: [[0, 0], [0, 1], [1, 1], [2, 1], [2, 2]]
+};
+const BL_NAMES = Object.keys(BL_PIECES);
+const BL_TOTAL_SQUARES = 89;
+
+function blNormalize(cells) {
+  const minR = Math.min(...cells.map((c) => c[0]));
+  const minC = Math.min(...cells.map((c) => c[1]));
+  return cells.map(([r, c]) => [r - minR, c - minC]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+function blRotate(cells) {
+  return blNormalize(cells.map(([r, c]) => [c, -r]));
+}
+
+function blFlip(cells) {
+  return blNormalize(cells.map(([r, c]) => [r, -c]));
+}
+
+function blKey(cells) {
+  return blNormalize(cells).map(([r, c]) => r + ',' + c).join(';');
+}
+
+// Alle verschiedenen Lagen eines Stücks (Drehungen und Spiegelungen)
+function blOrientations(cells) {
+  const seen = new Map();
+  let cur = blNormalize(cells);
+  for (let f = 0; f < 2; f++) {
+    for (let k = 0; k < 4; k++) {
+      seen.set(blKey(cur), cur);
+      cur = blRotate(cur);
+    }
+    cur = blFlip(cur);
+  }
+  return [...seen.values()];
+}
+
+const BL_ORIENTS = Object.fromEntries(BL_NAMES.map((n) => [n, blOrientations(BL_PIECES[n])]));
+const BL_ORIENT_KEYS = Object.fromEntries(BL_NAMES.map((n) => [n, new Set(BL_ORIENTS[n].map(blKey))]));
+
+function blSize(playerCount) {
+  return playerCount === 2 ? 14 : 20;
+}
+
+// Startfeld des Spielers: Duo (14 x 14): zwei Felder in der Mitte; 20 x 20: die vier Ecken (im Uhrzeigersinn ab oben links)
+function blStartIdx(size, slot) {
+  if (size === 14) return slot === 1 ? 4 * 14 + 4 : 9 * 14 + 9;
+  return [0, 19, 19 * 20 + 19, 19 * 20][slot - 1];
+}
+
+function blRemaining(used) {
+  return BL_NAMES.filter((n) => !used.includes(n));
+}
+
+function blRemainingSquares(used) {
+  return blRemaining(used).reduce((s, n) => s + BL_PIECES[n].length, 0);
+}
+
+// Wertung wie im Original: jedes Restfeld zählt minus 1; alle Stücke gelegt +15, und +5 mehr, wenn das Einzelquadrat zuletzt kam
+function blScore(used) {
+  const left = blRemainingSquares(used);
+  if (left > 0) return -left;
+  return 15 + (used[used.length - 1] === 'I1' ? 5 : 0);
+}
+
+// Entspricht die Auswahl von Feldern einer Lage des Stücks (an beliebiger Stelle des Bretts)?
+function blShapeMatches(piece, cells, size) {
+  if (!BL_PIECES[piece] || cells.length !== BL_PIECES[piece].length) return false;
+  const coords = cells.map((i) => [Math.floor(i / size), i % size]);
+  return BL_ORIENT_KEYS[piece].has(blKey(coords));
+}
+
+// Liefert '' wenn die Felder regelkonform belegt werden dürfen, sonst den Grund.
+// first = der Spieler hat noch kein Stück gelegt.
+function blCheckMove(board, size, slot, cells, first) {
+  const set = new Set(cells);
+  let corner = false;
+  for (const idx of cells) {
+    if (board[idx] !== 0) return 'Dieses Feld ist schon belegt.';
+    const r = Math.floor(idx / size);
+    const c = idx % size;
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+      if (board[rr * size + cc] === slot) return 'Das Stück darf deine eigenen Steine nicht an einer Kante berühren.';
+    }
+    for (const [dr, dc] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+      if (board[rr * size + cc] === slot) corner = true;
+    }
+  }
+  if (first) return set.has(blStartIdx(size, slot)) ? '' : 'Das erste Stück muss auf dem Startfeld liegen.';
+  return corner ? '' : 'Das Stück muss einen deiner Steine an einer Ecke berühren.';
+}
+
+// Felder, auf die ein Stück mit einer seiner Zellen fallen muss (Startfeld bzw. freie Eck-Anschlussfelder)
+function blAnchors(board, size, slot, first) {
+  if (first) {
+    const start = blStartIdx(size, slot);
+    return board[start] === 0 ? [start] : [];
+  }
+  const anchors = new Set();
+  for (let i = 0; i < board.length; i++) {
+    if (board[i] !== slot) continue;
+    const r = Math.floor(i / size);
+    const c = i % size;
+    for (const [dr, dc] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+      const idx = rr * size + cc;
+      if (board[idx] !== 0) continue;
+      const edgeOwn = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([er, ec]) => {
+        const r2 = rr + er;
+        const c2 = cc + ec;
+        return r2 >= 0 && r2 < size && c2 >= 0 && c2 < size && board[r2 * size + c2] === slot;
+      });
+      if (!edgeOwn) anchors.add(idx);
+    }
+  }
+  return [...anchors];
+}
+
+// Alle erlaubten Züge (Stück + Felder) der noch nicht gelegten Stücke; stopAtFirst für die schnelle Frage "gibt es einen?"
+function blMoves(board, size, slot, remaining, first, stopAtFirst) {
+  const anchors = blAnchors(board, size, slot, first);
+  const found = new Map();
+  for (const name of remaining) {
+    for (const shape of BL_ORIENTS[name]) {
+      for (const [sr, sc] of shape) {
+        for (const a of anchors) {
+          const ar = Math.floor(a / size);
+          const ac = a % size;
+          const cells = [];
+          let inside = true;
+          for (const [r, c] of shape) {
+            const rr = ar + (r - sr);
+            const cc = ac + (c - sc);
+            if (rr < 0 || rr >= size || cc < 0 || cc >= size) { inside = false; break; }
+            cells.push(rr * size + cc);
+          }
+          if (!inside || blCheckMove(board, size, slot, cells, first) !== '') continue;
+          const key = name + ':' + cells.slice().sort((x, y) => x - y).join(',');
+          if (!found.has(key)) {
+            found.set(key, { piece: name, cells });
+            if (stopAtFirst) return [...found.values()];
+          }
+        }
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+function blHasMove(board, size, slot, remaining, first) {
+  return blMoves(board, size, slot, remaining, first, true).length > 0;
+}
+
+// Wer ist nach einem Zug (oder einer Aufgabe) von fromSlot als Nächstes dran?
+// Wer nicht mehr legen kann, scheidet für den Rest der Runde aus (outSlots). turn = 0 heißt: keiner kann mehr.
+function blAdvance(size, board, usedList, outSlots, resigned, fromSlot) {
+  const n = usedList.length;
+  const out = new Set(outSlots);
+  for (let k = 1; k <= n; k++) {
+    const t = ((fromSlot - 1 + k) % n) + 1;
+    if (out.has(t) || resigned.includes(t)) continue;
+    if (blHasMove(board, size, t, blRemaining(usedList[t - 1]), usedList[t - 1].length === 0)) {
+      return { turn: t, outSlots: [...out].sort((a, b) => a - b) };
+    }
+    out.add(t);
+  }
+  return { turn: 0, outSlots: [...out].sort((a, b) => a - b) };
+}
+
+// Punkte aller Spieler und Sieger (nur wer nicht aufgegeben hat, kann gewinnen); mehrere Sieger = Gleichstand
+function blResult(usedList, resigned) {
+  const scores = usedList.map((u) => blScore(u));
+  const contenders = usedList.map((_, i) => i + 1).filter((s) => !resigned.includes(s));
+  const best = Math.max(...contenders.map((s) => scores[s - 1]));
+  return { scores, winners: contenders.filter((s) => scores[s - 1] === best) };
+}
+
 // ----- Datenbank-Aktionen (alles in Transaktionen, damit nichts durcheinanderkommt) -----
 async function gameTry(fn, okMessage) {
   if (gameBusy) return false;
@@ -3371,6 +3588,209 @@ function shipsShoot(gameId, idx) {
   });
 }
 
+// ----- Blokus (Mehrspieler-Rahmen): Einladen, Starten, Ziehen, Aufgeben -----
+// Mehrspieler-Runden liegen in der Sammlung "groupGames" (getrennt von den Duell-Partien in "games").
+
+function blStartFields(players) {
+  const size = blSize(players.length);
+  return {
+    status: 'active', players, size, board: new Array(size * size).fill(0), turn: 1,
+    used1: [], used2: [], used3: [], used4: [], outSlots: [], resigned: [],
+    lastSlot: 0, lastPiece: '', lastCells: [], moves: 0, scores: [], winners: [], winner: '', reason: ''
+  };
+}
+
+function blUsedList(g, override) {
+  return g.players.map((_, i) => (override && override.slot === i + 1 ? override.used : (g['used' + (i + 1)] || [])));
+}
+
+// Eine Runde eröffnen: 1 bis 3 Mitspieler einladen (der Eröffner ist automatisch dabei und zugesagt)
+function blokusCreate(invitees) {
+  return gameTry(async () => {
+    const me = currentUser.name;
+    const names = [...new Set(invitees || [])].filter((n) => n.toLowerCase() !== me.toLowerCase());
+    if (names.length < 1 || names.length > 3) throw new Error('Wähle 1 bis 3 Mitspieler.');
+    const ref = db.collection('groupGames').doc();
+    const ts = FieldValue.serverTimestamp();
+    await ref.set({
+      type: 'blokus', host: me, participants: [me, ...names], accepted: [me], declined: [], hiddenBy: [], status: 'invited',
+      players: [], size: 0, board: [], turn: 1, moves: 0, scores: [], winners: [], winner: '', reason: '', createdAt: ts, updatedAt: ts
+    });
+  }, 'Einladung verschickt.');
+}
+
+// Zusagen oder Absagen. Haben alle zugesagt, geht es sofort los; sagen alle ab, verfällt die Runde;
+// sagen einige ab, entscheidet der Eröffner (blokusStart).
+function blokusRespond(gameId, accept) {
+  return gameTry(async () => {
+    const ref = db.collection('groupGames').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Einladung gibt es nicht mehr.');
+      const g = snap.data();
+      const me = currentUser.name;
+      if (g.type !== 'blokus') throw new Error('Das ist keine Blokus-Runde.');
+      if (g.status !== 'invited') throw new Error('Die Einladung ist nicht mehr offen.');
+      if (!g.participants.includes(me) || g.host === me) throw new Error('Diese Einladung gilt nicht für dich.');
+      if (g.accepted.includes(me) || g.declined.includes(me)) throw new Error('Du hast schon geantwortet.');
+      const accepted = accept ? [...g.accepted, me] : g.accepted;
+      const declined = accept ? g.declined : [...g.declined, me];
+      const pending = g.participants.filter((n) => !accepted.includes(n) && !declined.includes(n));
+      const ts = FieldValue.serverTimestamp();
+      if (pending.length === 0 && accepted.length === 1) { tx.delete(ref); return; }
+      if (pending.length === 0 && declined.length === 0) {
+        tx.update(ref, { accepted, declined, ...blStartFields(g.participants.filter((n) => accepted.includes(n))), startedAt: ts, updatedAt: ts });
+        return;
+      }
+      tx.update(ref, { accepted, declined, updatedAt: ts });
+    });
+  }, accept ? 'Zugesagt.' : null);
+}
+
+// Der Eröffner startet mit den Zugesagten (mindestens ein Mitspieler). Wer noch nicht geantwortet hat, ist dann nicht dabei.
+function blokusStart(gameId) {
+  return gameTry(async () => {
+    const ref = db.collection('groupGames').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Runde gibt es nicht mehr.');
+      const g = snap.data();
+      if (g.status !== 'invited') throw new Error('Die Runde ist schon gestartet.');
+      if (g.host !== currentUser.name) throw new Error('Nur wer die Runde eröffnet hat, kann sie starten.');
+      if (g.accepted.length < 2) throw new Error('Es hat noch niemand zugesagt.');
+      const players = g.participants.filter((n) => g.accepted.includes(n));
+      const ts = FieldValue.serverTimestamp();
+      tx.update(ref, { participants: players, ...blStartFields(players), startedAt: ts, updatedAt: ts });
+    });
+  }, 'Die Runde beginnt.');
+}
+
+function blokusCancel(gameId) {
+  return gameTry(async () => {
+    const ref = db.collection('groupGames').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      const g = snap.data();
+      if (g.status !== 'invited') throw new Error('Die Runde ist schon gestartet.');
+      if (g.host !== currentUser.name) throw new Error('Nur wer die Runde eröffnet hat, kann sie abbrechen.');
+      tx.delete(ref);
+    });
+  });
+}
+
+// Beendet die Runde: Punkte, Sieger und Statistik (Partien und Siege pro Person; bei Gleichstand zählt ein Unentschieden)
+function groupApplyResult(tx, ref, g, base, result, reason) {
+  const ts = FieldValue.serverTimestamp();
+  const winners = result.winners.map((s) => g.players[s - 1]);
+  tx.update(ref, {
+    ...base, status: 'finished', scores: result.scores, winners, winner: winners.length === 1 ? winners[0] : '',
+    turn: 0, reason, finishedAt: ts, updatedAt: ts
+  });
+  const statsRef = db.collection('gameStats').doc(g.type);
+  const played = Object.fromEntries(g.players.map((n) => [n.toLowerCase(), FieldValue.increment(1)]));
+  if (winners.length === 1) {
+    const others = g.players.filter((n) => n !== winners[0]);
+    tx.set(statsRef, {
+      played, wins: { [winners[0].toLowerCase()]: FieldValue.increment(1) },
+      lastWin: { winner: winners[0], loser: others.join(', '), losers: others, game: GAME_TYPES[g.type].label, at: ts }
+    }, { merge: true });
+  } else {
+    tx.set(statsRef, { played, draws: Object.fromEntries(winners.map((n) => [n.toLowerCase(), FieldValue.increment(1)])) }, { merge: true });
+  }
+}
+
+// Ein Stück legen: piece = Name (z.B. "F5"), cells = die belegten Feldnummern auf dem Brett
+function blokusPlay(gameId, piece, cells) {
+  return gameTry(async () => {
+    const ref = db.collection('groupGames').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Runde gibt es nicht mehr.');
+      const g = snap.data();
+      if (g.type !== 'blokus') throw new Error('Das ist keine Blokus-Runde.');
+      if (g.status !== 'active') throw new Error('Die Runde läuft nicht mehr.');
+      const slot = gamePlayerIndex(g, currentUser.name) + 1;
+      if (slot < 1) throw new Error('Du spielst in dieser Runde nicht mit.');
+      if (g.turn !== slot) throw new Error('Du bist nicht dran.');
+      if (!BL_PIECES[piece]) throw new Error('Unbekanntes Stück.');
+      const used = g['used' + slot] || [];
+      if (used.includes(piece)) throw new Error('Dieses Stück hast du schon gelegt.');
+      const total = g.size * g.size;
+      if (!Array.isArray(cells) || cells.length !== BL_PIECES[piece].length || new Set(cells).size !== cells.length
+        || !cells.every((c) => Number.isInteger(c) && c >= 0 && c < total)) throw new Error('Ungültiger Zug.');
+      if (!blShapeMatches(piece, cells, g.size)) throw new Error('Die Form passt nicht zum gewählten Stück.');
+      const problem = blCheckMove(g.board, g.size, slot, cells, used.length === 0);
+      if (problem) throw new Error(problem);
+
+      const board = g.board.slice();
+      cells.forEach((c) => { board[c] = slot; });
+      const newUsed = [...used, piece];
+      const base = {
+        board, ['used' + slot]: newUsed, lastSlot: slot, lastPiece: piece,
+        lastCells: cells.slice().sort((a, b) => a - b), moves: (g.moves || 0) + 1
+      };
+      const usedList = blUsedList(g, { slot, used: newUsed });
+      const adv = blAdvance(g.size, board, usedList, g.outSlots || [], g.resigned || [], slot);
+      if (adv.turn === 0) {
+        groupApplyResult(tx, ref, g, { ...base, outSlots: adv.outSlots }, blResult(usedList, g.resigned || []), 'finished');
+      } else {
+        tx.update(ref, { ...base, turn: adv.turn, outSlots: adv.outSlots, updatedAt: FieldValue.serverTimestamp() });
+      }
+    });
+  });
+}
+
+// Aufgeben: Wer aufgibt, kann nicht mehr gewinnen. Bleibt nur noch einer übrig, hat er gewonnen,
+// sonst wird ohne den Aufgebenden weitergespielt.
+async function blokusResign(gameId) {
+  const ok = await confirmModal('Aufgeben?', 'Du kannst dann nicht mehr gewinnen. Die anderen spielen weiter.', 'Aufgeben');
+  if (!ok) return false;
+  return gameTry(async () => {
+    const ref = db.collection('groupGames').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error('Die Runde gibt es nicht mehr.');
+      const g = snap.data();
+      if (g.status !== 'active') throw new Error('Die Runde läuft nicht mehr.');
+      const slot = gamePlayerIndex(g, currentUser.name) + 1;
+      if (slot < 1) throw new Error('Du spielst in dieser Runde nicht mit.');
+      if ((g.resigned || []).includes(slot)) throw new Error('Du hast schon aufgegeben.');
+      const resigned = [...(g.resigned || []), slot];
+      const usedList = blUsedList(g);
+      const contenders = g.players.map((_, i) => i + 1).filter((s) => !resigned.includes(s));
+      if (contenders.length <= 1) {
+        groupApplyResult(tx, ref, g, { resigned }, { scores: usedList.map(blScore), winners: contenders }, 'resign');
+        return;
+      }
+      let turn = g.turn;
+      let outSlots = g.outSlots || [];
+      if (g.turn === slot) {
+        const adv = blAdvance(g.size, g.board, usedList, outSlots, resigned, slot);
+        turn = adv.turn;
+        outSlots = adv.outSlots;
+      }
+      if (turn === 0) groupApplyResult(tx, ref, g, { resigned, outSlots }, blResult(usedList, resigned), 'finished');
+      else tx.update(ref, { resigned, outSlots, turn, updatedAt: FieldValue.serverTimestamp() });
+    });
+  });
+}
+
+// Eine beendete Runde aus der eigenen Liste ausblenden (für die anderen bleibt sie sichtbar)
+function blokusHide(gameId) {
+  return gameTry(async () => {
+    const ref = db.collection('groupGames').doc(gameId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return;
+      const g = snap.data();
+      if (g.status !== 'finished') throw new Error('Nur beendete Runden lassen sich ausblenden.');
+      const hidden = g.hiddenBy || [];
+      if (!hidden.includes(currentUser.name)) tx.update(ref, { hiddenBy: [...hidden, currentUser.name] });
+    });
+  });
+}
+
 function chessPlayMove(gameId, from, to, promo) {
   return gameTry(async () => {
     const ref = db.collection('games').doc(gameId);
@@ -3492,7 +3912,7 @@ function subscribeGames() {
 function subscribeGameStats() {
   const unsubs = Object.keys(GAME_TYPES).map((type) => db.collection('gameStats').doc(type).onSnapshot((doc) => {
     const d = doc.exists ? doc.data({ serverTimestamps: 'estimate' }) : {};
-    gameStatsAll[type] = { wins: d.wins || {}, draws: d.draws || {}, lastWin: d.lastWin || null };
+    gameStatsAll[type] = { wins: d.wins || {}, draws: d.draws || {}, played: d.played || {}, lastWin: d.lastWin || null };
     renderHomeLastWin();
     if (currentScreen === 'games') renderGames();
   }));
@@ -3542,7 +3962,7 @@ function gamesPendingCount(type) {
 function updateGamesBadge() {
   const badge = document.getElementById('nav-badge-games');
   if (!badge || !currentUser) return;
-  badge.classList.toggle('show', gamesPendingCount() > 0 && currentScreen !== 'games');
+  badge.classList.toggle('show', (gamesPendingCount() > 0 || groupPendingCount() > 0) && currentScreen !== 'games');
 }
 
 // ----- Startseite: Karte "Spiele" und Karte "Letzter Sieg" -----
@@ -3563,6 +3983,10 @@ function renderHomeGames() {
     const opp = g.players[gamePlayerIndex(g, currentUser.name) === 0 ? 1 : 0];
     lines.push(`<div class="games-hint-line">🤝 ${coloredNameHtml(opp)} bietet dir Remis an (${escapeHtml(gameLabel(g))})</div>`);
   });
+  const gp = groupPendingInfo();
+  gp.invites.forEach((g) => lines.push(`<div class="games-hint-line">⚔️ ${coloredNameHtml(g.host)} lädt dich zu ${escapeHtml(GAME_TYPES[g.type].label)} ein (${g.participants.length} Spieler)</div>`));
+  gp.myTurn.forEach((g) => lines.push(`<div class="games-hint-line">🎯 Du bist dran bei ${escapeHtml(GAME_TYPES[g.type].label)} (mit ${joinNamesHtml(g.players.filter((n) => n !== currentUser.name))})</div>`));
+  gp.hostReady.forEach((g) => lines.push(`<div class="games-hint-line">▶️ Alle haben geantwortet – starte deine ${escapeHtml(GAME_TYPES[g.type].label)}-Runde</div>`));
   myVisibleTournaments().filter((t) => t.status !== 'finished').forEach((t) => {
     const label = (GAME_TYPES[t.game] || { label: t.game }).label;
     lines.push(`<div class="games-hint-line">🏆 Turnier ${escapeHtml(label)}: ${escapeHtml(tnPrizeLabel(t))} zu gewinnen (bis ${escapeHtml(tnRangeLabel(t).split('–').pop().slice(0, 6))})</div>`);
@@ -3591,13 +4015,15 @@ function renderHomeLastWin() {
   if (!lw) { card.style.display = 'none'; return; }
   const dateLabel = lw.at.toDate().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
   card.style.display = '';
-  el.innerHTML = `${dateLabel} ${coloredNameHtml(lw.winner)} hat gegen ${coloredNameHtml(lw.loser)} in ${escapeHtml(lw.game)} gewonnen.`;
+  const losers = Array.isArray(lw.losers) && lw.losers.length ? joinNamesHtml(lw.losers) : coloredNameHtml(lw.loser);
+  el.innerHTML = `${dateLabel} ${coloredNameHtml(lw.winner)} hat gegen ${losers} in ${escapeHtml(lw.game)} gewonnen.`;
 }
 
 // ----- Spiele-Seite -----
 function resetGamesView() {
   gamesView = 'menu';
   openGameId = null;
+  openGroupId = null;
   openTournamentId = null;
   lastBoardSig = '';
   chSel = null;
@@ -3608,6 +4034,12 @@ function renderGames() {
   const titleEl = document.getElementById('games-title');
   if (!el || !titleEl || !currentUser) return;
 
+  if (gamesView === 'gboard') {
+    const gg = groupGameOf(openGroupId);
+    if (gg && gg.status !== 'invited') { renderBlokusBoard(el, titleEl, gg); return; }
+    gamesView = 'globby';
+    openGroupId = null;
+  }
   if (gamesView === 'board') {
     const g = gameOf(openGameId);
     if (g && g.status !== 'invited') {
@@ -3626,7 +4058,8 @@ function renderGames() {
     chSel = null;
   }
   lastBoardSig = '';
-  if (gamesView === 'tournament') renderTournamentView(el, titleEl);
+  if (gamesView === 'globby') renderGroupLobby(el, titleEl, gamesType);
+  else if (gamesView === 'tournament') renderTournamentView(el, titleEl);
   else if (gamesView === 'menu') renderGamesMenu(el, titleEl);
   else renderGameLobby(el, titleEl, gamesType);
 }
@@ -3638,7 +4071,7 @@ function renderGamesMenu(el, titleEl) {
     ? `<div class="games-section-title" style="margin-top:0;">🏆 Turniere</div>${tns.map(tnCardHtml).join('')}<div class="games-section-title">Spiele</div>`
     : '';
   el.innerHTML = tnBlock + Object.entries(GAME_TYPES).map(([type, t]) => {
-    const n = gamesPendingCount(type);
+    const n = t.multi ? groupPendingCount() : gamesPendingCount(type);
     return `
     <button class="game-tile" data-open-game="${type}">
       <span class="game-tile-icon">${t.icon}</span>
@@ -3648,7 +4081,7 @@ function renderGamesMenu(el, titleEl) {
   }).join('');
   el.querySelectorAll('[data-open-game]').forEach((b) => b.addEventListener('click', () => {
     gamesType = b.dataset.openGame;
-    gamesView = 'lobby';
+    gamesView = GAME_TYPES[gamesType].multi ? 'globby' : 'lobby';
     renderGames();
   }));
   el.querySelectorAll('[data-open-tournament]').forEach((b) => b.addEventListener('click', () => {
@@ -4354,7 +4787,7 @@ function initTournamentForm() {
   const startInput = document.getElementById('tn-start');
   const createBtn = document.getElementById('tn-create-btn');
   if (!gameSel || !daysSel || !prizeSel || !startInput || !createBtn) return;
-  gameSel.innerHTML = Object.entries(GAME_TYPES).map(([k, v]) => `<option value="${k}">${escapeHtml(v.label)}</option>`).join('');
+  gameSel.innerHTML = Object.entries(GAME_TYPES).filter(([, v]) => !v.multi).map(([k, v]) => `<option value="${k}">${escapeHtml(v.label)}</option>`).join('');
   daysSel.innerHTML = [1, 2, 3].map((d) => `<option value="${d}">${d} ${d === 1 ? 'Tag' : 'Tage'}</option>`).join('');
   prizeSel.innerHTML = Array.from({ length: 10 }, (_, i) => `<option value="${i + 1}" ${i + 1 === 5 ? 'selected' : ''}>${i + 1} €</option>`).join('');
   startInput.value = tnToday();
@@ -4603,6 +5036,354 @@ function renderShipsBoard(el, titleEl, g) {
   bindResignAndRematch(el, g, myIdx);
 }
 
+// ----- Mehrspieler-Runden (Blokus): Abo, Hinweise, Lobby und Spielbrett -----
+function subscribeGroupGames() {
+  return db.collection('groupGames').where('participants', 'array-contains', currentUser.name).onSnapshot((snap) => {
+    groupGamesRaw = snap.docs.map((d) => ({ id: d.id, ...d.data({ serverTimestamps: 'estimate' }) }))
+      .filter((g) => g.type && GAME_TYPES[g.type] && Array.isArray(g.participants));
+    renderGames();
+    renderHomeGames();
+    updateGamesBadge();
+    groupCleanup(groupGamesRaw);
+  });
+}
+
+// Alte beendete Runden (> 7 Tage) und unbeantwortete Einladungen (> 14 Tage) aufräumen
+function groupCleanup(list) {
+  const now = Date.now();
+  list.forEach((g) => {
+    const ts = g.status === 'finished' ? g.finishedAt : g.createdAt;
+    const ms = ts && ts.toMillis ? ts.toMillis() : null;
+    if (!ms) return;
+    const ageDays = (now - ms) / 86400000;
+    if ((g.status === 'finished' && ageDays > GAME_FINISHED_KEEP_DAYS) || (g.status === 'invited' && ageDays > GAME_STALE_INVITE_DAYS)) {
+      db.collection('groupGames').doc(g.id).delete().catch(() => {});
+    }
+  });
+}
+
+function groupGameOf(id) {
+  return groupGamesRaw.find((g) => g.id === id);
+}
+
+// Einladungen an mich, Runden in denen ich dran bin, Runden die ich als Eröffner starten kann (alle haben geantwortet)
+function groupPendingInfo() {
+  const me = currentUser.name;
+  const invites = groupGamesRaw.filter((g) => g.status === 'invited' && g.host !== me && g.participants.includes(me)
+    && !g.accepted.includes(me) && !g.declined.includes(me));
+  const myTurn = groupGamesRaw.filter((g) => g.status === 'active' && g.players[g.turn - 1] === me);
+  const hostReady = groupGamesRaw.filter((g) => g.status === 'invited' && g.host === me && g.accepted.length >= 2
+    && g.participants.every((n) => g.accepted.includes(n) || g.declined.includes(n)));
+  return { invites, myTurn, hostReady };
+}
+
+function groupPendingCount() {
+  const { invites, myTurn, hostReady } = groupPendingInfo();
+  return new Set([...invites, ...myTurn, ...hostReady].map((g) => g.id)).size;
+}
+
+function joinNamesHtml(names) {
+  const html = names.map(coloredNameHtml);
+  return html.length > 1 ? `${html.slice(0, -1).join(', ')} und ${html[html.length - 1]}` : html.join('');
+}
+
+// Farben für 2 bis 4 Spieler: Nutzerfarben, bei zu ähnlichen Farben wird eine ersetzt
+function groupStoneStyles(names) {
+  const fallback = ['#4A90D9', '#E3C94A', '#D9534F', '#5FAE6B', '#B07CD9', '#E3A857'];
+  const chosen = [];
+  names.forEach((n) => {
+    const u = usersMap[n.toLowerCase()];
+    let fill = (u && userColor(u, 'color')) || null;
+    const ring = (u && userColor(u, 'border')) || fill;
+    if (!fill || chosen.some((c) => colorDistance(c.fill, fill) < 90)) {
+      fill = fallback.find((f) => chosen.every((c) => colorDistance(c.fill, f) >= 90)) || invertColor(chosen[0].fill);
+    }
+    chosen.push({ fill, ring: ring || fill });
+  });
+  return chosen;
+}
+
+function blStatsTableHtml(type) {
+  const st = gameStatsAll[type] || {};
+  const lower = new Set([...Object.keys(st.played || {}), ...Object.keys(st.wins || {}), ...Object.keys(st.draws || {})]);
+  if (!lower.size) return `<div class="games-muted">Noch keine beendeten Runden.</div>`;
+  const rows = [...lower].map((n) => ({ name: canonicalUserName(n), wins: (st.wins || {})[n] || 0, draws: (st.draws || {})[n] || 0, played: (st.played || {})[n] || 0 }))
+    .sort((a, b) => b.wins - a.wins || a.played - b.played || a.name.localeCompare(b.name));
+  const withDraws = rows.some((r) => r.draws);
+  return `<table class="games-table">
+    <thead><tr><th>Spieler</th><th class="mid">Siege</th>${withDraws ? '<th class="mid">Unentschieden</th>' : ''}<th class="mid">Runden</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><td>${coloredNameHtml(r.name)}</td><td class="mid">${r.wins}</td>${withDraws ? `<td class="mid">${r.draws}</td>` : ''}<td class="mid">${r.played}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function groupPriority(g) {
+  const me = currentUser.name;
+  const { invites, myTurn, hostReady } = groupPendingInfo();
+  if (invites.includes(g)) return 0;
+  if (myTurn.includes(g) || hostReady.includes(g)) return 1;
+  if (g.status === 'active') return 2;
+  if (g.status === 'invited') return 3;
+  return 4;
+}
+
+function groupCardHtml(g) {
+  const me = currentUser.name;
+  const meta = GAME_TYPES[g.type];
+  const others = g.participants.filter((n) => n !== me);
+  let info = '';
+  let actions = '';
+  if (g.status === 'invited') {
+    if (g.host === me) {
+      const pending = g.participants.filter((n) => !g.accepted.includes(n) && !g.declined.includes(n));
+      const parts = [];
+      const yes = g.accepted.filter((n) => n !== me);
+      if (yes.length) parts.push(`zugesagt: ${joinNamesHtml(yes)}`);
+      if (pending.length) parts.push(`noch offen: ${joinNamesHtml(pending)}`);
+      if (g.declined.length) parts.push(`abgesagt: ${joinNamesHtml(g.declined)}`);
+      info = `Du hast ${joinNamesHtml(others)} eingeladen<br><span class="games-muted">${parts.join(' · ')}</span>`;
+      actions = `${g.accepted.length >= 2 ? `<button class="btn btn-primary btn-small" data-bl-start="${g.id}" data-bl-pending="${pending.length}">${pending.length ? 'Mit den Zugesagten starten' : 'Starten'}</button>` : ''}
+                 <button class="btn btn-ghost btn-small" data-bl-cancel="${g.id}">Abbrechen</button>`;
+    } else if (g.accepted.includes(me)) {
+      info = `${coloredNameHtml(g.host)} hat dich eingeladen – du hast zugesagt, warte auf den Start`;
+    } else {
+      info = `${coloredNameHtml(g.host)} lädt dich ein${others.length > 1 ? ` (mit ${joinNamesHtml(others.filter((n) => n !== g.host))})` : ''}`;
+      actions = `<button class="btn btn-primary btn-small" data-bl-accept="${g.id}">Annehmen</button>
+                 <button class="btn btn-secondary btn-small" data-bl-decline="${g.id}">Ablehnen</button>`;
+    }
+  } else if (g.status === 'active') {
+    const turnName = g.players[g.turn - 1];
+    const mine = turnName === me;
+    info = `Mit ${joinNamesHtml(others)} – ${mine ? '<strong>du bist dran</strong>' : `${coloredNameHtml(turnName)} ist dran`}`;
+    actions = `<button class="btn btn-primary btn-small" data-bl-open="${g.id}">Öffnen</button>`;
+  } else {
+    const slot = g.players.indexOf(me) + 1;
+    let result;
+    if (!g.winners || g.winners.length !== 1) result = g.winners && g.winners.length ? `Unentschieden zwischen ${joinNamesHtml(g.winners)}` : 'beendet';
+    else if (g.winner === me) result = '🏆 Du hast gewonnen';
+    else result = `${coloredNameHtml(g.winner)} hat gewonnen`;
+    info = `Mit ${joinNamesHtml(others)} – ${result}${slot ? ` (du: ${g.scores[slot - 1] > 0 ? '+' : ''}${g.scores[slot - 1]} Punkte)` : ''}`;
+    actions = `<button class="btn btn-secondary btn-small" data-bl-open="${g.id}">Ansehen</button>
+               <button class="btn btn-primary btn-small" data-bl-rematch="${g.id}">Revanche</button>
+               <button class="btn btn-ghost btn-small" data-bl-hide="${g.id}">Entfernen</button>`;
+  }
+  return `<div class="game-card"><div>${info}</div>${actions ? `<div class="game-card-actions">${actions}</div>` : ''}</div>`;
+}
+
+function renderGroupLobby(el, titleEl, type) {
+  const meta = GAME_TYPES[type];
+  titleEl.textContent = meta.label;
+  const me = currentUser.name;
+  const mine = groupGamesRaw.filter((g) => g.type === type && !(g.hiddenBy || []).includes(me) && !(g.declined || []).includes(me))
+    .sort((a, b) => groupPriority(a) - groupPriority(b));
+  const others = Object.values(usersMap).map((u) => u.name).filter((n) => n.toLowerCase() !== me.toLowerCase()).sort((a, b) => a.localeCompare(b));
+  blInviteSel = new Set([...blInviteSel].filter((n) => others.includes(n)));
+  const count = blInviteSel.size;
+  el.innerHTML = `
+    <div class="games-section-title" style="margin-top:0;">Neue Runde</div>
+    <div class="game-card">
+      <div class="games-muted" style="margin-bottom:6px;">Wen möchtest du einladen? (1 bis 3 Mitspieler) – zu zweit wird auf dem kleinen Brett (14×14) gespielt, ab drei Spielern auf dem großen (20×20).</div>
+      ${others.map((n) => `<label class="tn-check"><input type="checkbox" data-bl-invite="${escapeHtml(n)}" ${blInviteSel.has(n) ? 'checked' : ''}> ${coloredNameHtml(n)}</label>`).join('') || '<div class="games-muted">Es gibt noch keine anderen Nutzer.</div>'}
+      <div class="game-card-actions"><button class="btn btn-primary btn-small" id="bl-create-btn" ${count >= 1 && count <= 3 ? '' : 'disabled'}>${count ? `Mit ${count} ${count === 1 ? 'Mitspieler' : 'Mitspielern'} einladen` : 'Einladen'}</button></div>
+    </div>
+    <div class="games-section-title">Meine Runden</div>
+    ${mine.length ? mine.map(groupCardHtml).join('') : '<div class="games-muted">Noch keine Runden. Lade oben jemanden ein!</div>'}
+    <div class="games-section-title">Siege und Runden</div>
+    ${blStatsTableHtml(type)}`;
+
+  el.querySelectorAll('[data-bl-invite]').forEach((cb) => cb.addEventListener('change', () => {
+    if (cb.checked) blInviteSel.add(cb.dataset.blInvite); else blInviteSel.delete(cb.dataset.blInvite);
+    renderGames();
+  }));
+  const create = el.querySelector('#bl-create-btn');
+  if (create) create.addEventListener('click', async () => {
+    const ok = await blokusCreate([...blInviteSel]);
+    if (ok) { blInviteSel = new Set(); renderGames(); }
+  });
+  el.querySelectorAll('[data-bl-accept]').forEach((b) => b.addEventListener('click', () => blokusRespond(b.dataset.blAccept, true)));
+  el.querySelectorAll('[data-bl-decline]').forEach((b) => b.addEventListener('click', () => blokusRespond(b.dataset.blDecline, false)));
+  el.querySelectorAll('[data-bl-start]').forEach((b) => b.addEventListener('click', async () => {
+    const pending = parseInt(b.dataset.blPending, 10);
+    if (pending > 0) {
+      const ok = await confirmModal('Jetzt starten?', 'Wer noch nicht geantwortet hat, ist dann nicht dabei.', 'Starten');
+      if (!ok) return;
+    }
+    blokusStart(b.dataset.blStart);
+  }));
+  el.querySelectorAll('[data-bl-cancel]').forEach((b) => b.addEventListener('click', () => blokusCancel(b.dataset.blCancel)));
+  el.querySelectorAll('[data-bl-open]').forEach((b) => b.addEventListener('click', () => groupOpenBoard(b.dataset.blOpen)));
+  el.querySelectorAll('[data-bl-hide]').forEach((b) => b.addEventListener('click', () => blokusHide(b.dataset.blHide)));
+  el.querySelectorAll('[data-bl-rematch]').forEach((b) => b.addEventListener('click', async () => {
+    const g = groupGameOf(b.dataset.blRematch);
+    if (g) await blokusCreate(g.players.filter((n) => n !== currentUser.name));
+  }));
+}
+
+function groupOpenBoard(gameId) {
+  const g = groupGameOf(gameId);
+  if (!g) return;
+  openGroupId = gameId;
+  gamesView = 'gboard';
+  lastBoardSig = '';
+  blUi = { gameId, piece: null, shape: null, at: null };
+  renderGames();
+}
+
+function blSyncUi(g) {
+  if (blUi.gameId !== g.id) blUi = { gameId: g.id, piece: null, shape: null, at: null };
+}
+
+// Vorschau des gewählten Stücks an der angetippten Stelle (die erste Zelle des Stücks liegt auf dem angetippten Feld)
+function blGhost(g, slot) {
+  if (!blUi.piece || !blUi.shape || !blUi.at) return null;
+  const [tr, tc] = blUi.at;
+  const [r0, c0] = blUi.shape[0];
+  const size = g.size;
+  const cells = blUi.shape.map(([r, c]) => [tr + (r - r0), tc + (c - c0)]);
+  if (!cells.every(([r, c]) => r >= 0 && r < size && c >= 0 && c < size)) return { cells, idxs: null, problem: 'Das Stück ragt über den Rand.' };
+  const idxs = cells.map(([r, c]) => r * size + c);
+  const used = g['used' + slot] || [];
+  return { cells, idxs, problem: blCheckMove(g.board, size, slot, idxs, used.length === 0) };
+}
+
+function blMiniPiece(name, fill) {
+  const shape = blNormalize(BL_PIECES[name]);
+  const w = Math.max(...shape.map((c) => c[1])) + 1;
+  const h = Math.max(...shape.map((c) => c[0])) + 1;
+  const on = new Set(shape.map(([r, c]) => r * w + c));
+  let cells = '';
+  for (let i = 0; i < w * h; i++) cells += on.has(i) ? `<i class="on" style="background:${fill}"></i>` : '<i></i>';
+  return `<span class="bl-mini" style="grid-template-columns:repeat(${w}, 8px)">${cells}</span>`;
+}
+
+function renderBlokusBoard(el, titleEl, g) {
+  titleEl.textContent = GAME_TYPES[g.type].label;
+  const me = currentUser.name;
+  const slot = g.players.indexOf(me) + 1;
+  if (slot < 1) { el.innerHTML = '<div class="games-muted">Du spielst in dieser Runde nicht mit.</div>'; return; }
+  blSyncUi(g);
+  const styles = groupStoneStyles(g.players);
+  const isActive = g.status === 'active';
+  const resigned = g.resigned || [];
+  const outSlots = g.outSlots || [];
+  const myTurn = isActive && g.turn === slot && !resigned.includes(slot);
+  const usedList = blUsedList(g);
+
+  // Nur neu zeichnen, wenn sich wirklich etwas geändert hat
+  const sig = JSON.stringify([g.id, g.status, g.turn, g.moves, g.players, styles, resigned, outSlots, g.winners, myTurn ? blUi : null]);
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
+
+  const size = g.size;
+  const ghost = myTurn ? blGhost(g, slot) : null;
+  const ghostMap = new Map();
+  if (ghost) ghost.cells.forEach(([r, c]) => { if (r >= 0 && r < size && c >= 0 && c < size) ghostMap.set(r * size + c, ghost.problem ? 'bad' : 'ok'); });
+  const lastSet = new Set(g.lastCells || []);
+  const startMarks = new Map();
+  if (isActive) g.players.forEach((_, i) => { if (usedList[i].length === 0) startMarks.set(blStartIdx(size, i + 1), i); });
+
+  const cells = g.board.map((v, i) => {
+    const classes = ['bl-cell'];
+    let style = '';
+    if (v) { classes.push('filled'); style = `background:${styles[v - 1].fill};--ring:${styles[v - 1].ring};`; }
+    if (lastSet.has(i)) classes.push('last');
+    if (!v && startMarks.has(i) && !ghostMap.has(i)) { classes.push('start'); style = `--ring:${styles[startMarks.get(i)].fill};`; }
+    if (ghostMap.has(i)) { classes.push('ghost-' + ghostMap.get(i)); style += `background:${styles[slot - 1].fill};`; }
+    return `<div class="${classes.join(' ')}" data-bl-cell="${i}" style="${style}"></div>`;
+  }).join('');
+
+  const chip = (idx) => {
+    const n = idx + 1;
+    const left = blRemainingSquares(usedList[idx]);
+    const note = resigned.includes(n) ? 'aufgegeben' : (outSlots.includes(n) && isActive ? 'kann nicht mehr' : `${left} Felder`);
+    return `
+    <div class="c4-player ${isActive && g.turn === n ? 'turn' : ''} ${(resigned.includes(n) || (outSlots.includes(n) && isActive)) ? 'bl-out' : ''}">
+      <span class="c4-dot" style="background:${styles[idx].fill};--ring:${styles[idx].ring};"></span>${coloredNameHtml(g.players[idx])}<small class="ch-side">${note}</small>
+    </div>`;
+  };
+
+  let status = '';
+  let ranking = '';
+  if (g.status === 'finished') {
+    const order = g.players.map((_, i) => i + 1).sort((a, b) => (resigned.includes(a) - resigned.includes(b)) || (g.scores[b - 1] - g.scores[a - 1]));
+    ranking = `<div class="bl-ranking">${order.map((s, i) => `<div class="${(g.winners || []).includes(g.players[s - 1]) ? 'win' : ''}">${i + 1}. ${coloredNameHtml(g.players[s - 1])} – ${g.scores[s - 1] > 0 ? '+' : ''}${g.scores[s - 1]} Punkte (${blRemainingSquares(usedList[s - 1])} Felder übrig)${resigned.includes(s) ? ', aufgegeben' : ''}</div>`).join('')}</div>`;
+    status = (g.winners || []).length === 1
+      ? `🏆 ${coloredNameHtml(g.winner)} hat gewonnen!${g.reason === 'resign' ? ' – die anderen haben aufgegeben' : ''}`
+      : `🤝 Unentschieden zwischen ${joinNamesHtml(g.winners || [])}`;
+  } else if (resigned.includes(slot)) {
+    status = 'Du hast aufgegeben. Die anderen spielen weiter.';
+  } else if (myTurn) {
+    status = '<strong>Du bist dran</strong> – wähle ein Stück, tippe aufs Brett und setze es.';
+  } else if (outSlots.includes(slot)) {
+    status = `Du kannst kein Stück mehr legen. ${coloredNameHtml(g.players[g.turn - 1])} ist dran …`;
+  } else {
+    status = `${coloredNameHtml(g.players[g.turn - 1])} ist dran …`;
+  }
+
+  // Stück-Vorrat und Bedienung (nur wenn ich dran bin)
+  let controls = '';
+  if (myTurn) {
+    const remaining = blRemaining(usedList[slot - 1]);
+    const tray = remaining.map((n) => `<button class="bl-piece ${blUi.piece === n ? 'sel' : ''}" data-bl-piece="${n}" aria-label="Stück ${n}">${blMiniPiece(n, styles[slot - 1].fill)}</button>`).join('');
+    let hint = 'Wähle ein Stück aus deinem Vorrat.';
+    if (blUi.piece && !ghost) hint = 'Tippe aufs Brett, wohin das Stück soll (das erste Feld des Stücks liegt dort).';
+    if (ghost) hint = ghost.problem ? `<span class="bl-bad">${escapeHtml(ghost.problem)}</span>` : '<span class="bl-good">Passt – tippe auf „Setzen“.</span>';
+    const first = usedList[slot - 1].length === 0;
+    controls = `
+      <div class="games-muted" style="text-align:center;margin:10px 0 6px;">${first ? 'Dein erstes Stück muss das markierte Startfeld belegen. ' : ''}${remaining.length} Stücke im Vorrat</div>
+      <div class="bl-tray">${tray}</div>
+      <div class="bl-hint">${hint}</div>
+      ${blUi.piece ? `<div class="bl-controls">
+        <button class="btn btn-secondary btn-small" id="bl-rot">⟳ Drehen</button>
+        <button class="btn btn-secondary btn-small" id="bl-flip">⇋ Spiegeln</button>
+        ${ghost ? `<span class="bl-arrows"><button class="btn-icon" id="bl-left" aria-label="nach links">←</button><button class="btn-icon" id="bl-up" aria-label="nach oben">↑</button><button class="btn-icon" id="bl-down" aria-label="nach unten">↓</button><button class="btn-icon" id="bl-right" aria-label="nach rechts">→</button></span>` : ''}
+        <button class="btn btn-primary btn-small" id="bl-place" ${ghost && !ghost.problem ? '' : 'disabled'}>Setzen</button>
+      </div>` : ''}`;
+  }
+
+  let actions = '';
+  if (isActive && !resigned.includes(slot)) actions = `<button class="btn btn-ghost btn-small" id="bl-resign-btn">Aufgeben</button>`;
+  else if (g.status === 'finished') actions = `<button class="btn btn-primary btn-small" id="bl-rematch-btn">Revanche</button>`;
+
+  el.innerHTML = `
+    <div class="c4-players">${g.players.map((_, i) => chip(i)).join('')}</div>
+    <div class="c4-status">${status}</div>
+    ${ranking}
+    <div class="bl-board" style="grid-template-columns:repeat(${size}, 1fr);">${cells}</div>
+    ${controls}
+    <div class="c4-actions">${actions}</div>`;
+
+  // Bedienung
+  el.querySelectorAll('[data-bl-piece]').forEach((b) => b.addEventListener('click', () => {
+    const name = b.dataset.blPiece;
+    if (blUi.piece === name) { blUi = { gameId: g.id, piece: null, shape: null, at: null }; } else { blUi.piece = name; blUi.shape = blNormalize(BL_PIECES[name]); }
+    renderGames();
+  }));
+  const board = el.querySelector('.bl-board');
+  if (myTurn && board) board.addEventListener('click', (e) => {
+    const cell = e.target.closest('[data-bl-cell]');
+    if (!cell) return;
+    if (!blUi.piece) { toast('Wähle zuerst ein Stück aus deinem Vorrat.'); return; }
+    const idx = parseInt(cell.dataset.blCell, 10);
+    blUi.at = [Math.floor(idx / size), idx % size];
+    renderGames();
+  });
+  const on = (id, fn) => { const b = el.querySelector(id); if (b) b.addEventListener('click', fn); };
+  on('#bl-rot', () => { blUi.shape = blRotate(blUi.shape); renderGames(); });
+  on('#bl-flip', () => { blUi.shape = blFlip(blUi.shape); renderGames(); });
+  const nudge = (dr, dc) => () => { if (blUi.at) { blUi.at = [blUi.at[0] + dr, blUi.at[1] + dc]; renderGames(); } };
+  on('#bl-left', nudge(0, -1)); on('#bl-right', nudge(0, 1)); on('#bl-up', nudge(-1, 0)); on('#bl-down', nudge(1, 0));
+  on('#bl-place', async () => {
+    const gh = blGhost(g, slot);
+    if (!gh || gh.problem || !gh.idxs) return;
+    const ok = await blokusPlay(g.id, blUi.piece, gh.idxs);
+    if (ok) { blUi = { gameId: g.id, piece: null, shape: null, at: null }; renderGames(); }
+  });
+  on('#bl-resign-btn', () => blokusResign(g.id));
+  on('#bl-rematch-btn', async () => {
+    const ok = await blokusCreate(g.players.filter((n) => n !== me));
+    if (ok) { gamesView = 'globby'; openGroupId = null; renderGames(); }
+  });
+}
+
 function bindResignAndRematch(el, g, myIdx) {
   const resignBtn = el.querySelector('#g-resign-btn');
   if (resignBtn) resignBtn.addEventListener('click', () => gameResign(g.id));
@@ -4770,7 +5551,9 @@ function chessSquareClick(g, myIdx, legal, idx) {
 
 // Zurück-Knopf: Brett -> Übersicht des Spiels -> Spiele-Menü -> Startseite
 document.getElementById('games-back-btn').addEventListener('click', () => {
-  if (gamesView === 'board') { gamesView = openTournamentId ? 'tournament' : 'lobby'; openGameId = null; chSel = null; }
+  if (gamesView === 'gboard') { gamesView = 'globby'; openGroupId = null; }
+  else if (gamesView === 'globby') { gamesView = 'menu'; }
+  else if (gamesView === 'board') { gamesView = openTournamentId ? 'tournament' : 'lobby'; openGameId = null; chSel = null; }
   else if (gamesView === 'tournament') { gamesView = 'menu'; openTournamentId = null; }
   else if (gamesView === 'lobby') { gamesView = 'menu'; }
   else { showScreen('home'); return; }
@@ -5517,7 +6300,7 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays', 'games', 'gameStats', 'tournaments'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays', 'games', 'gameStats', 'tournaments', 'groupGames'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
@@ -5724,6 +6507,7 @@ function startAppListeners() {
   unsubscribers.push(subscribeGymDays());
   unsubscribers.push(subscribeGames());
   unsubscribers.push(subscribeGameStats());
+  unsubscribers.push(subscribeGroupGames());
   unsubscribers.push(subscribeTournaments());
   tnTimer = setInterval(tournamentsAdvanceAll, 60000);
   unsubscribers.push(() => clearInterval(tnTimer));

@@ -434,6 +434,30 @@ a { color: inherit; }
 @keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
 .c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
+/* ---------- Blokus ---------- */
+.bl-board { display: grid; gap: 1px; background: #1a2328; padding: 4px; border-radius: 8px; width: 100%; max-width: 440px; margin: 0 auto; box-sizing: border-box; }
+.bl-cell { aspect-ratio: 1; background: #2b3a42; border-radius: 2px; position: relative; }
+.bl-cell.filled { box-shadow: inset 0 0 0 1px var(--ring, transparent); }
+.bl-cell.last { outline: 2px solid rgba(255, 221, 87, 0.95); outline-offset: -2px; z-index: 1; }
+.bl-cell.start::after { content: ''; position: absolute; inset: 28%; border-radius: 50%; border: 2px solid var(--ring, #fff); }
+.bl-cell.ghost-ok { outline: 2px solid #5fd07a; outline-offset: -2px; opacity: 0.85; z-index: 2; }
+.bl-cell.ghost-bad { outline: 2px solid #ff6b5a; outline-offset: -2px; opacity: 0.6; z-index: 2; }
+.bl-tray { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 440px; margin: 0 auto; }
+.bl-piece { padding: 6px; border-radius: 8px; border: 2px solid transparent; background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; min-width: 38px; min-height: 38px; }
+.bl-piece.sel { border-color: var(--accent-gold); background: var(--surface-alt); }
+.bl-mini { display: grid; gap: 1px; }
+.bl-mini i { width: 8px; height: 8px; display: block; }
+.bl-mini i.on { border-radius: 1px; }
+.bl-hint { text-align: center; font-size: 0.88rem; margin: 10px 0 4px; min-height: 1.3em; }
+.bl-bad { color: #ff6b5a; }
+.bl-good { color: #5fd07a; }
+.bl-controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; margin-top: 8px; }
+.bl-arrows { display: inline-flex; gap: 4px; }
+.bl-out { opacity: 0.55; }
+.bl-ranking { max-width: 440px; margin: 0 auto 12px; font-size: 0.9rem; }
+.bl-ranking > div { padding: 4px 0; }
+.bl-ranking .win { font-weight: 700; }
+
 /* ---------- Schiffe versenken ---------- */
 .sh-boards { display: flex; flex-direction: column; align-items: stretch; }
 .sh-title { font-size: 0.85rem; color: var(--text-muted); margin: 10px 0 4px; text-align: center; }
