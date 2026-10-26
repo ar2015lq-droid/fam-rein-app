@@ -434,6 +434,33 @@ a { color: inherit; }
 @keyframes c4-pulse { from { transform: scale(1); } to { transform: scale(0.8); } }
 .c4-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 
+/* ---------- Sudoku ---------- */
+.su-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px; max-width: 440px; margin: 0 auto; }
+.su-pick { aspect-ratio: 1; border-radius: 10px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; position: relative; }
+.su-pick.done { background: rgba(95, 174, 107, 0.22); border-color: #5FAE6B; }
+.su-pick.done::after { content: '✓'; position: absolute; top: 1px; right: 4px; font-size: 0.7rem; color: #5FAE6B; }
+.su-pick.started { border-color: var(--accent-gold); }
+.su-pick.started::after { content: '◐'; position: absolute; top: 1px; right: 4px; font-size: 0.7rem; color: var(--accent-gold); }
+.su-top { display: flex; justify-content: space-between; max-width: 440px; margin: 0 auto 6px; font-size: 0.9rem; color: var(--text-muted); }
+.su-msg { max-width: 440px; margin: 0 auto 8px; min-height: 2.6em; text-align: center; font-size: 0.88rem; }
+.su-board { display: grid; grid-template-columns: repeat(9, 1fr); max-width: 440px; margin: 0 auto; background: var(--text); border: 2px solid var(--text); gap: 1px; border-radius: 6px; overflow: hidden; }
+.su-cell { aspect-ratio: 1; box-sizing: border-box; background: var(--surface); border: none; padding: 0; font: inherit; font-size: clamp(16px, 5.4vw, 26px); color: var(--text); display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; }
+.su-cell.bR { border-right: 2px solid var(--text); }
+.su-cell.bB { border-bottom: 2px solid var(--text); }
+.su-cell.given { font-weight: 800; background: var(--surface-alt); }
+.su-cell.peer { background: rgba(120, 160, 200, 0.2); }
+.su-cell.same { background: rgba(255, 221, 87, 0.3); }
+.su-cell.sel { background: rgba(80, 160, 240, 0.42); }
+.su-cell.bad { background: rgba(255, 90, 77, 0.42); }
+.su-notes { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; height: 100%; font-size: clamp(7px, 2.2vw, 10px); color: var(--text-muted); line-height: 1; }
+.su-notes i { font-style: normal; display: flex; align-items: center; justify-content: center; }
+.su-pad { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; max-width: 440px; margin: 12px auto 8px; }
+.su-num { padding: 8px 0; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 1.05rem; cursor: pointer; }
+.su-num small { display: block; font-size: 0.6rem; color: var(--text-muted); }
+.su-num:disabled { opacity: 0.35; cursor: default; }
+.su-tools { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 440px; margin: 0 auto; }
+.su-on { border-color: var(--accent-gold); background: var(--surface-alt); font-weight: 700; }
+
 /* ---------- Blokus ---------- */
 .bl-board { display: grid; gap: 1px; background: #1a2328; padding: 4px; border-radius: 8px; width: 100%; max-width: 440px; margin: 0 auto; box-sizing: border-box; }
 .bl-cell { aspect-ratio: 1; background: #2b3a42; border-radius: 2px; position: relative; }
