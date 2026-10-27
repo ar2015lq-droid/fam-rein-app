@@ -5818,6 +5818,7 @@ function suFinishPuzzle() {
   ui.done = true;
   ui.msg = '';
   ui.bad = new Set();
+  ui.sel = -1;
   suStopTimer();
   clearTimeout(ui.saveTimer);
   ui.dirty = false;
@@ -5865,6 +5866,15 @@ function suUndo() {
   ui.msg = '';
   ui.dirty = true;
   suSaveSoon();
+  renderGames();
+}
+
+// Alle Markierungen weg: keine Auswahl, keine Hervorhebung von Zeile/Spalte/Block/gleichen Zahlen, keine roten Prüf-Markierungen
+function suDeselect() {
+  const ui = suUi;
+  if (!ui) return;
+  ui.sel = -1;
+  ui.bad = new Set();
   renderGames();
 }
 
@@ -5996,6 +6006,7 @@ function renderSudokuBoard(el, titleEl) {
          <button class="btn btn-secondary btn-small" id="su-restart-btn">Noch einmal</button></div>`
     : `<div class="su-pad">${pad}</div>
        <div class="su-tools">
+         <button class="btn btn-secondary btn-small" id="su-desel-btn" ${ui.sel < 0 && ui.bad.size === 0 ? 'disabled' : ''}>◌ Markierung aus</button>
          <button class="btn btn-secondary btn-small ${ui.notesMode ? 'su-on' : ''}" id="su-notes-btn" aria-pressed="${ui.notesMode}">✎ Notiz ${ui.notesMode ? 'an' : 'aus'}</button>
          <button class="btn btn-secondary btn-small" id="su-undo-btn" ${ui.history.length ? '' : 'disabled'}>↶ Rückgängig</button>
          <button class="btn btn-secondary btn-small" id="su-clear-btn">⌫ Löschen</button>
@@ -6020,6 +6031,7 @@ function renderSudokuBoard(el, titleEl) {
   });
   el.querySelectorAll('[data-su-num]').forEach((b) => b.addEventListener('click', () => suPlace(parseInt(b.dataset.suNum, 10))));
   const on = (id, fn) => { const b = el.querySelector(id); if (b) b.addEventListener('click', fn); };
+  on('#su-desel-btn', suDeselect);
   on('#su-notes-btn', () => { ui.notesMode = !ui.notesMode; renderGames(); });
   on('#su-undo-btn', suUndo);
   on('#su-clear-btn', suClear);
@@ -6034,6 +6046,7 @@ document.addEventListener('keydown', (e) => {
   if (!suUi || gamesView !== 'sboard' || currentScreen !== 'games' || suUi.done) return;
   if (e.target && /^(input|textarea|select)$/i.test(e.target.tagName)) return;
   if (e.key >= '1' && e.key <= '9') { suPlace(parseInt(e.key, 10)); e.preventDefault(); return; }
+  if (e.key === 'Escape') { suDeselect(); e.preventDefault(); return; }
   if (e.key === 'Backspace' || e.key === 'Delete' || e.key === '0') { suClear(); e.preventDefault(); return; }
   const move = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.key];
   if (move) {
