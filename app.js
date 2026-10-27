@@ -684,6 +684,203 @@ function addDish() {
 // Kommentaren von Betrachtern.
 // ==========================================================
 
+// <CUSTOM-START>
+// ----- Bewertung der Einträge durch die Freigegebenen: Plus, Kreis, Minus -----
+// Der Besitzer schaltet das pro Liste ein. Bewertet wird von denen, für die die Liste freigegeben ist.
+// Jeder bewertet nur für sich (gespeichert am Eintrag unter "votes", ein Feld pro Person),
+// alle sehen, wer wie bewertet hat. Die Zahl 1 bis 10 des Besitzers bleibt davon unberührt.
+const VOTE_OPTIONS = [
+  { key: 'plus', glyph: '+', label: 'Plus' },
+  { key: 'circle', glyph: '○', label: 'Kreis' },
+  { key: 'minus', glyph: '−', label: 'Minus' }
+];
+const VOTE_KEYS = VOTE_OPTIONS.map((o) => o.key);
+
+function voteSameName(a, b) {
+  return String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+// Feldname einer Person im "votes"-Feld (ohne Punkte, damit der Name kein Feld-Pfad wird)
+function voteKey(name) {
+  return encodeURIComponent(String(name).toLowerCase()).replace(/\./g, '%2E');
+}
+
+// Wer bewerten darf: alle, für die die Liste freigegeben ist (ohne den Besitzer), soweit es sie noch gibt
+function voteParticipants(list) {
+  const seen = new Set();
+  const out = [];
+  (list.sharedWith || []).forEach((n) => {
+    const u = usersMap[String(n).toLowerCase()];
+    if (!u || voteSameName(u.name, list.owner) || seen.has(u.name.toLowerCase())) return;
+    seen.add(u.name.toLowerCase());
+    out.push(u.name);
+  });
+  return out;
+}
+
+function canVote(list, name) {
+  return list.voting === true && voteParticipants(list).some((n) => voteSameName(n, name));
+}
+
+function voteOf(entry, name) {
+  const v = (entry.votes || {})[voteKey(name)];
+  return VOTE_KEYS.includes(v) ? v : null;
+}
+
+// Zählt nur die, die gerade bewerten dürfen (wer nicht mehr freigegeben ist, zählt nicht mit)
+function voteCounts(entry, list) {
+  const c = { plus: 0, circle: 0, minus: 0, open: 0 };
+  voteParticipants(list).forEach((n) => {
+    const v = voteOf(entry, n);
+    if (v) c[v] += 1; else c.open += 1;
+  });
+  return c;
+}
+
+function voteScore(entry, list) {
+  const c = voteCounts(entry, list);
+  return c.plus - c.minus;
+}
+
+const CUSTOM_SORTS = ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc', 'votes-desc'];
+
+function entryCreatedMs(e) {
+  if (e.createdAt && typeof e.createdAt.toMillis === 'function') return e.createdAt.toMillis();
+  return typeof e.createdAt === 'number' ? e.createdAt : Infinity;   // noch nicht bestätigt = ganz neu
+}
+
+// Reihenfolge des Besitzers: erst Einträge mit gespeicherter Position, danach die ohne (in der Reihenfolge des Anlegens)
+function manualOrder(entries) {
+  return entries.slice().sort((a, b) => {
+    const ao = Number.isFinite(a.order);
+    const bo = Number.isFinite(b.order);
+    if (ao && bo) return a.order - b.order || a.name.localeCompare(b.name);
+    if (ao !== bo) return ao ? -1 : 1;
+    const ca = entryCreatedMs(a);
+    const cb = entryCreatedMs(b);
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+// Wie viele Freigegebene haben so bewertet (oder nur die eine Person, wenn from gesetzt ist)?
+function voteCountFor(entry, list, kind, from) {
+  const all = voteParticipants(list);
+  const people = from ? all.filter((n) => voteSameName(n, from)) : all;
+  return people.filter((n) => voteOf(entry, n) === kind).length;
+}
+
+// Sortierung der Einträge. view.first: Einträge mit dieser Bewertung kommen zuerst (die mit den meisten davon vorn),
+// innerhalb davon gilt die gewählte Sortierung.
+function customSortedEntries(entries, list, view) {
+  const pos = new Map(manualOrder(entries).map((e, i) => [e.id, i]));
+  const base = (a, b) => {
+    if (view.sort === 'manual') return pos.get(a.id) - pos.get(b.id);
+    if (view.sort === 'name-desc') return b.name.localeCompare(a.name);
+    if (view.sort === 'rating-desc') return (b.rating - a.rating) || a.name.localeCompare(b.name);
+    if (view.sort === 'rating-asc') return (a.rating - b.rating) || a.name.localeCompare(b.name);
+    if (view.sort === 'votes-desc') return (voteScore(b, list) - voteScore(a, list)) || a.name.localeCompare(b.name);
+    return a.name.localeCompare(b.name);
+  };
+  if (!view.first) return entries.slice().sort(base);
+  return entries.slice().sort((a, b) =>
+    (voteCountFor(b, list, view.first, view.from) - voteCountFor(a, list, view.first, view.from)) || base(a, b));
+}
+
+// Einen Eintrag in der eigenen Reihenfolge um eine Stelle verschieben (dir = -1 nach oben, 1 nach unten); nur der Besitzer.
+// Beim ersten Verschieben bekommen alle Einträge ihre feste Position, damit die Reihenfolge für alle gleich ist.
+async function moveCustomEntry(list, entries, entryId, dir) {
+  if (!voteSameName(list.owner, currentUser.name)) return false;
+  const ordered = manualOrder(entries);
+  const i = ordered.findIndex((e) => e.id === entryId);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= ordered.length) return false;
+  [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
+  try {
+    const batch = db.batch();
+    const col = db.collection('customLists').doc(list.id).collection('entries');
+    ordered.forEach((e, k) => { if (e.order !== k) batch.update(col.doc(e.id), { order: k }); });
+    if (!list.manual) batch.update(db.collection('customLists').doc(list.id), { manual: true });
+    await batch.commit();
+    return true;
+  } catch (err) {
+    console.error('Verschieben fehlgeschlagen', err);
+    toast('Der Eintrag konnte nicht verschoben werden.');
+    return false;
+  }
+}
+
+// Ansicht des Besitzers (Sortierung, Bewertung nur von einer Person, "zuerst") wird auf diesem Gerät gemerkt
+function customViewKey(list) {
+  return 'familienapp_clview_' + voteKey(currentUser.name) + '_' + list.id;
+}
+
+function loadCustomView(list) {
+  try {
+    const raw = localStorage.getItem(customViewKey(list));
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function saveCustomView(list) {
+  try {
+    localStorage.setItem(customViewKey(list), JSON.stringify({ sort: activeCustomSort, from: activeCustomVoteFrom, first: activeCustomVoteFirst }));
+  } catch (err) { /* Speicher nicht verfügbar: dann gilt die Ansicht nur für diese Sitzung */ }
+}
+
+// Eigene Bewertung setzen; vote = null nimmt sie zurück. Es wird immer nur das Feld der angemeldeten Person geschrieben.
+async function castVote(list, entryId, vote) {
+  const me = currentUser.name;
+  if (vote !== null && !VOTE_KEYS.includes(vote)) return false;
+  if (!canVote(list, me)) { toast('Du kannst hier nicht bewerten.'); return false; }
+  try {
+    await db.collection('customLists').doc(list.id).collection('entries').doc(entryId)
+      .update({ ['votes.' + voteKey(me)]: vote === null ? FieldValue.delete() : vote });
+    return true;
+  } catch (err) {
+    console.error('Bewertung nicht gespeichert', err);
+    toast('Die Bewertung konnte nicht gespeichert werden.');
+    return false;
+  }
+}
+
+// Bewertung für diese Liste ein- oder ausschalten (nur der Besitzer)
+async function setListVoting(list, on) {
+  if (!voteSameName(list.owner, currentUser.name)) return false;
+  try {
+    await db.collection('customLists').doc(list.id).update({ voting: !!on });
+    return true;
+  } catch (err) {
+    console.error('Einstellung nicht gespeichert', err);
+    toast('Die Einstellung konnte nicht gespeichert werden.');
+    return false;
+  }
+}
+
+// Zeile unter einem Eintrag: meine drei Knöpfe (wenn ich bewerten darf) und die Bewertungen aller Freigegebenen
+function customVotesHtml(list, item, from = '') {
+  if (!list.voting) return '';
+  const all = voteParticipants(list);
+  if (!all.length) return '';
+  const people = from ? all.filter((n) => voteSameName(n, from)) : all;
+  const me = currentUser.name;
+  const mine = canVote(list, me) ? voteOf(item, me) : null;
+  const buttons = canVote(list, me)
+    ? `<div class="cl-vote-btns" role="group" aria-label="Meine Bewertung">${VOTE_OPTIONS.map((o) =>
+      `<button class="cl-vbtn v-${o.key} ${mine === o.key ? 'sel' : ''}" data-vote-entry="${item.id}" data-vote-kind="${o.key}" aria-pressed="${mine === o.key}" aria-label="${o.label}">${o.glyph}</button>`).join('')}</div>`
+    : '';
+  const chips = people.map((n) => {
+    const v = voteOf(item, n);
+    const opt = VOTE_OPTIONS.find((o) => o.key === v);
+    const u = usersMap[n.toLowerCase()];
+    const col = u ? userColor(u, 'color') : null;
+    return `<span class="cl-vchip ${v ? 'v-' + v : 'none'}" title="${escapeHtml(n)}: ${opt ? opt.label : 'noch nicht bewertet'}"><span class="cl-vname" style="${col ? `color:${col};` : ''}">${escapeHtml(n)}</span><b>${opt ? opt.glyph : '–'}</b></span>`;
+  }).join('');
+  return `<div class="cl-votes">${buttons}<div class="cl-vchips">${chips}</div></div>`;
+}
+
 function ratingOptionsHtml(selected) {
   let html = '';
   for (let i = 1; i <= 10; i++) {
@@ -701,6 +898,8 @@ let activeCustomEntryUnsub = null;
 let activeCustomCommentUnsub = null;
 let activeCustomEditingEntryId = null;
 let activeCustomSort = 'name-asc';
+let activeCustomVoteFrom = '';       // Besitzer: Bewertung nur von dieser Person zeigen ('' = von allen)
+let activeCustomVoteFirst = null;    // Besitzer: Einträge mit dieser Bewertung zuerst ('plus' | 'circle' | 'minus')
 
 // One-time migration: the three original admin-only lists (Gaming/Spiele/Serien)
 // become normal Custom Listen owned by Alex, carrying over their old entries.
@@ -737,6 +936,13 @@ function subscribeCustomLists() {
   return db.collection('customLists').onSnapshot((snap) => {
     customListsRaw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderCustomLists();
+    // Ist gerade eine Liste offen: aktuellen Stand zeigen (z.B. Bewertung an/aus, Freigabe); gelöscht oder nicht mehr freigegeben: schließen
+    if (activeCustomListId) {
+      const live = customListsRaw.find((l) => l.id === activeCustomListId);
+      const me = currentUser.name.toLowerCase();
+      const allowed = live && (live.owner.toLowerCase() === me || (live.sharedWith || []).some((n) => n.toLowerCase() === me));
+      if (allowed) renderCustomModalBody(live); else closeCustomListModal();
+    }
   });
 }
 
@@ -753,7 +959,10 @@ function renderCustomLists() {
 
   mineEl.innerHTML = mine.length ? mine.map((l) => `
     <div class="custom-list-card">
-      <div class="item-text">${escapeHtml(l.title)}</div>
+      <div style="flex:1;">
+        <div class="item-text">${escapeHtml(l.title)}</div>
+        ${l.voting ? '<div class="item-meta">Bewertung durch Freigegebene an (+ ○ −)</div>' : ''}
+      </div>
       <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
       <button class="btn-icon" data-delete-list="${l.id}" title="Liste löschen">🗑️</button>
     </div>`).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine eigene Liste.</div>`;
@@ -765,7 +974,7 @@ function renderCustomLists() {
     <div class="custom-list-card">
       <div style="flex:1;">
         <div class="item-text">${escapeHtml(l.title)}</div>
-        <div class="item-meta">von <span style="${ownerColor ? `color:${ownerColor};font-weight:600;` : ''}">${escapeHtml(l.owner)}</span></div>
+        <div class="item-meta">von <span style="${ownerColor ? `color:${ownerColor};font-weight:600;` : ''}">${escapeHtml(l.owner)}</span>${l.voting ? ' · du kannst bewerten (+ ○ −)' : ''}</div>
       </div>
       <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
     </div>`;
@@ -819,7 +1028,17 @@ function openCustomListModal(list) {
   activeCustomListId = list.id;
   activeCustomIsOwner = list.owner.toLowerCase() === currentUser.name.toLowerCase();
   activeCustomEditingEntryId = null;
-  activeCustomSort = 'name-asc';
+  activeCustomSort = list.manual ? 'manual' : 'name-asc';   // hat der Besitzer sortiert, gilt seine Reihenfolge
+  activeCustomVoteFrom = '';
+  activeCustomVoteFirst = null;
+  if (activeCustomIsOwner) {
+    const v = loadCustomView(list);
+    if (v) {
+      if (CUSTOM_SORTS.includes(v.sort)) activeCustomSort = v.sort;
+      if (typeof v.from === 'string') activeCustomVoteFrom = v.from;
+      if (VOTE_KEYS.includes(v.first)) activeCustomVoteFirst = v.first;
+    }
+  }
   activeCustomEntries = [];
   activeCustomComments = [];
 
@@ -846,36 +1065,78 @@ function closeCustomListModal() {
 }
 
 function renderCustomModalBody(list) {
+  list = customListsRaw.find((l) => l.id === list.id) || list;   // immer der aktuelle Stand der Liste
   const root = document.getElementById('modal-root');
   const isOwner = activeCustomIsOwner;
 
-  const entries = activeCustomEntries.slice().sort((a, b) => {
-    if (activeCustomSort === 'name-asc') return a.name.localeCompare(b.name);
-    if (activeCustomSort === 'name-desc') return b.name.localeCompare(a.name);
-    if (activeCustomSort === 'rating-desc') return b.rating - a.rating;
-    if (activeCustomSort === 'rating-asc') return a.rating - b.rating;
-    return 0;
+  // Scrollstand und halb getippte Eingaben merken, damit ein Neuzeichnen (z.B. weil jemand bewertet hat) nichts verschiebt
+  const prevBox = root.querySelector('.modal-box');
+  const prevScroll = prevBox ? prevBox.scrollTop : 0;
+  const keep = {};
+  ['custom-entry-name-input', 'custom-comment-input'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) keep[id] = { value: el.value, focus: document.activeElement === el };
   });
+  const ratingEl = document.getElementById('custom-entry-rating-input');
+  const keepRating = ratingEl ? ratingEl.value : null;
 
-  const entriesHtml = entries.length ? entries.map((item) => {
+  const participants = voteParticipants(list);
+  const ownerView = isOwner && list.voting === true && participants.length > 0;   // Ansichtsleiste: nur für den Besitzer
+  const from = ownerView ? (participants.find((n) => voteSameName(n, activeCustomVoteFrom)) || '') : '';
+  const first = ownerView ? activeCustomVoteFirst : null;
+  if (!list.voting && /^votes-/.test(activeCustomSort)) activeCustomSort = 'name-asc';
+  const entries = customSortedEntries(activeCustomEntries, list, { sort: activeCustomSort, from, first });
+  const canMove = isOwner && activeCustomSort === 'manual' && !first;
+
+  const entriesHtml = entries.length ? entries.map((item, idx) => {
     if (isOwner && item.id === activeCustomEditingEntryId) {
       return `
-        <div class="list-item">
+        <div class="cl-entry"><div class="list-item">
           <input type="text" data-custom-edit-name="${item.id}" value="${escapeHtml(item.name)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
           <select data-custom-edit-rating="${item.id}">${ratingOptionsHtml(item.rating)}</select>
           <button class="btn-icon" data-custom-save-entry="${item.id}" title="Speichern">✓</button>
           <button class="btn-icon" data-custom-cancel-entry="1" title="Abbrechen">✕</button>
-        </div>`;
+        </div></div>`;
     }
+    const votesHtml = customVotesHtml(list, item, from);
     return `
-      <div class="list-item">
-        <div class="item-text" style="flex:1;">${escapeHtml(item.name)}</div>
-        <span class="task-due">${item.rating}/10</span>
-        ${isOwner ? `
-          <button class="btn-icon" data-custom-edit-entry="${item.id}" title="Bearbeiten">✏️</button>
-          <button class="btn-icon" data-custom-delete-entry="${item.id}" title="Löschen">🗑️</button>` : ''}
+      <div class="cl-entry">
+        <div class="list-item ${votesHtml ? 'has-votes' : ''}">
+          <div class="item-text" style="flex:1;">${escapeHtml(item.name)}</div>
+          <span class="task-due">${item.rating}/10</span>
+          ${canMove ? `<span class="cl-move"><button class="btn-icon" data-move-entry="${item.id}" data-move-dir="-1" title="Nach oben" aria-label="Nach oben" ${idx === 0 ? 'disabled' : ''}>▲</button><button class="btn-icon" data-move-entry="${item.id}" data-move-dir="1" title="Nach unten" aria-label="Nach unten" ${idx === entries.length - 1 ? 'disabled' : ''}>▼</button></span>` : ''}
+          ${isOwner ? `
+            <button class="btn-icon" data-custom-edit-entry="${item.id}" title="Bearbeiten">✏️</button>
+            <button class="btn-icon" data-custom-delete-entry="${item.id}" title="Löschen">🗑️</button>` : ''}
+        </div>
+        ${votesHtml}
       </div>`;
   }).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine Einträge.</div>`;
+
+  // Ansicht des Besitzers: Bewertung nur von einer Person zeigen, Einträge mit +, ○ oder − zuerst
+  const firstOpt = VOTE_OPTIONS.find((o) => o.key === first);
+  const viewBarHtml = ownerView ? `
+    <div class="cl-viewbar">
+      <label for="custom-vote-from">Bewertung von:</label>
+      <select id="custom-vote-from" class="custom-sort-select">
+        <option value="">Allen</option>
+        ${participants.map((n) => `<option value="${escapeHtml(n)}" ${n === from ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+      </select>
+      <span class="cl-first"><span class="cl-first-label">Zuerst:</span>${VOTE_OPTIONS.map((o) =>
+        `<button class="cl-fbtn v-${o.key} ${first === o.key ? 'sel' : ''}" data-vote-first="${o.key}" aria-pressed="${first === o.key}" aria-label="${o.label} zuerst" title="${o.label} zuerst">${o.glyph}</button>`).join('')}</span>
+    </div>
+    ${(from || firstOpt) ? `<div class="section-note" style="margin-top:6px;">${from ? `Du siehst nur die Bewertung von ${escapeHtml(from)}. ` : ''}${firstOpt ? `Einträge mit ${firstOpt.glyph} stehen oben${from ? '' : ' (die mit den meisten zuerst)'}.` : ''}</div>` : ''}` : '';
+  const moveHintHtml = canMove ? `<div class="section-note" style="margin-top:8px;">Mit ▲ ▼ verschiebst du die Einträge. Die anderen sehen diese Reihenfolge unter „Reihenfolge des Besitzers“.</div>` : '';
+
+  let voteInfoHtml = '';
+  if (list.voting) {
+    if (canVote(list, currentUser.name)) {
+      const done = activeCustomEntries.filter((e) => voteOf(e, currentUser.name)).length;
+      voteInfoHtml = `<div class="section-note" style="margin-top:10px;">Tippe bei jedem Eintrag auf <b>+</b>, <b>○</b> oder <b>−</b>. Du hast ${done} von ${activeCustomEntries.length} bewertet.</div>`;
+    } else if (isOwner) {
+      voteInfoHtml = `<div class="section-note" style="margin-top:10px;">${voteParticipants(list).length ? 'Die Freigegebenen können die Einträge mit + ○ − bewerten.' : 'Bewertung ist an – gib die Liste für jemanden frei, damit bewertet werden kann.'}</div>`;
+    }
+  }
 
   const addRowHtml = isOwner ? `
     <div class="add-bar">
@@ -896,6 +1157,11 @@ function renderCustomModalBody(list) {
             <input type="checkbox" data-share-user="${escapeHtml(u.name)}" ${checked ? 'checked' : ''}>
           </div>`;
       }).join('')}
+      <div class="custom-share-row" style="margin-top:8px;border-top:1px solid var(--border);padding-top:10px;">
+        <label for="custom-voting-toggle">Freigegebene dürfen die Einträge bewerten (+ ○ −)</label>
+        <input type="checkbox" id="custom-voting-toggle" ${list.voting ? 'checked' : ''}>
+      </div>
+      <div class="section-note">Jeder bewertet nur für sich, alle sehen, wer wie bewertet hat.</div>
     </div>` : (() => {
       const ownerData = usersMap[list.owner.toLowerCase()];
       const ownerColor = ownerData ? userColor(ownerData, 'color') : null;
@@ -930,12 +1196,17 @@ function renderCustomModalBody(list) {
         <div class="list-toolbar" style="justify-content:flex-start;gap:8px;margin-top:10px;">
           <label style="font-size:0.82rem;color:var(--text-muted);align-self:center;">Sortieren:</label>
           <select class="custom-sort-select" id="custom-sort-select">
+            <option value="manual" ${activeCustomSort === 'manual' ? 'selected' : ''}>${isOwner ? 'Meine Reihenfolge (verschieben)' : 'Reihenfolge des Besitzers'}</option>
             <option value="name-asc" ${activeCustomSort === 'name-asc' ? 'selected' : ''}>Name A–Z</option>
             <option value="name-desc" ${activeCustomSort === 'name-desc' ? 'selected' : ''}>Name Z–A</option>
             <option value="rating-desc" ${activeCustomSort === 'rating-desc' ? 'selected' : ''}>Bewertung hoch → niedrig</option>
             <option value="rating-asc" ${activeCustomSort === 'rating-asc' ? 'selected' : ''}>Bewertung niedrig → hoch</option>
+            ${list.voting ? `<option value="votes-desc" ${activeCustomSort === 'votes-desc' ? 'selected' : ''}>Beliebtheit (+ minus −)</option>` : ''}
           </select>
         </div>
+        ${viewBarHtml}
+        ${moveHintHtml}
+        ${voteInfoHtml}
         <div style="margin-top:10px;">${entriesHtml}</div>
         ${addRowHtml}
         ${shareHtml}
@@ -951,6 +1222,7 @@ function renderCustomModalBody(list) {
   document.getElementById('custom-modal-close-btn').addEventListener('click', closeCustomListModal);
   document.getElementById('custom-sort-select').addEventListener('change', (e) => {
     activeCustomSort = e.target.value;
+    if (isOwner) saveCustomView(list);
     renderCustomModalBody(list);
   });
 
@@ -989,6 +1261,44 @@ function renderCustomModalBody(list) {
     const commentInput = document.getElementById('custom-comment-input');
     if (commentInput) commentInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomComment(list); });
   }
+
+  // Bewerten: Knopf antippen setzt die eigene Bewertung, dieselbe noch einmal nimmt sie zurück
+  document.querySelectorAll('[data-vote-entry]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const entry = activeCustomEntries.find((e) => e.id === btn.dataset.voteEntry);
+      if (!entry) return;
+      const kind = btn.dataset.voteKind;
+      castVote(list, entry.id, voteOf(entry, currentUser.name) === kind ? null : kind);
+    });
+  });
+  const votingToggle = document.getElementById('custom-voting-toggle');
+  if (votingToggle) votingToggle.addEventListener('change', () => setListVoting(list, votingToggle.checked));
+  const fromSel = document.getElementById('custom-vote-from');
+  if (fromSel) fromSel.addEventListener('change', () => { activeCustomVoteFrom = fromSel.value; saveCustomView(list); renderCustomModalBody(list); });
+  document.querySelectorAll('[data-vote-first]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activeCustomVoteFirst = activeCustomVoteFirst === btn.dataset.voteFirst ? null : btn.dataset.voteFirst;
+      saveCustomView(list);
+      renderCustomModalBody(list);
+    });
+  });
+  document.querySelectorAll('[data-move-entry]').forEach((btn) => {
+    btn.addEventListener('click', () => moveCustomEntry(list, activeCustomEntries, btn.dataset.moveEntry, parseInt(btn.dataset.moveDir, 10)));
+  });
+
+  // Scrollstand und Eingaben wiederherstellen
+  const box = root.querySelector('.modal-box');
+  if (box && prevScroll) box.scrollTop = prevScroll;
+  Object.entries(keep).forEach(([id, k]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (k.value) el.value = k.value;
+    if (k.focus) el.focus();
+  });
+  if (keepRating) {
+    const r = document.getElementById('custom-entry-rating-input');
+    if (r) r.value = keepRating;
+  }
 }
 
 function saveCustomEntryEdit(list, entryId) {
@@ -1012,7 +1322,10 @@ function addCustomEntry(list) {
   const name = nameInput.value.trim();
   if (!name) return;
   const rating = parseInt(ratingSelect.value, 10);
-  db.collection('customLists').doc(list.id).collection('entries').add({ name, rating, createdAt: FieldValue.serverTimestamp() });
+  const entry = { name, rating, createdAt: FieldValue.serverTimestamp() };
+  const orders = activeCustomEntries.filter((e) => Number.isFinite(e.order)).map((e) => e.order);
+  if (orders.length) entry.order = Math.max(...orders) + 1;   // in der eigenen Reihenfolge ganz hinten
+  db.collection('customLists').doc(list.id).collection('entries').add(entry);
   nameInput.value = '';
 }
 
@@ -1028,6 +1341,7 @@ async function deleteCustomComment(list, commentId) {
   const ok = await confirmModal('Kommentar löschen?', 'Dieser Kommentar wird endgültig entfernt.');
   if (ok) db.collection('customLists').doc(list.id).collection('comments').doc(commentId).delete();
 }
+// <CUSTOM-END>
 
 // ==========================================================
 // CHAT
@@ -6982,10 +7296,22 @@ async function exportBackup() {
   try {
     const data = { exportedAt: new Date().toISOString(), exportedBy: currentUser.name };
 
-    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'customLists', 'birthdays', 'gymDays', 'games', 'gameStats', 'tournaments', 'groupGames', 'sudokuProgress', 'sudokuStats'];
+    const simpleCollections = ['shopping', 'tasks', 'chat', 'ideas', 'dailyActivity', 'meals', 'sickDays', 'users', 'settings', 'dishes', 'appointments', 'nerdEntries', 'birthdays', 'gymDays', 'games', 'gameStats', 'tournaments', 'groupGames', 'sudokuProgress', 'sudokuStats'];
     for (const col of simpleCollections) {
       const snap = await db.collection(col).get();
       data[col] = snap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }));
+    }
+
+    // Eigene Listen samt Einträgen (mit den Bewertungen der Freigegebenen) und Kommentaren
+    data.customLists = [];
+    const listsSnap = await db.collection('customLists').get();
+    for (const listDoc of listsSnap.docs) {
+      const [entriesSnap, commentsSnap] = await Promise.all([listDoc.ref.collection('entries').get(), listDoc.ref.collection('comments').get()]);
+      data.customLists.push({
+        id: listDoc.id, ...sanitizeForExport(listDoc.data()),
+        entries: entriesSnap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) })),
+        comments: commentsSnap.docs.map((d) => ({ id: d.id, ...sanitizeForExport(d.data()) }))
+      });
     }
 
     data.config = {};
