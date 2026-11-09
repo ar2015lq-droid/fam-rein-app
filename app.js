@@ -5,8 +5,8 @@
    ========================================================== */
 
 const ADMIN_NAME = 'Alex';
-const DAILY_MENUS = ['kalender', 'tasks', 'chat', 'konto', 'ideen'];
-const MENU_LABELS = { kalender: 'Kalender', tasks: 'Aufgaben', chat: 'Chat', konto: 'Konto', ideen: 'Ideen' };
+const DAILY_MENUS = ['kalender', 'tasks', 'chat'];   // Bereiche, die für den Tages-Bonus besucht werden müssen (zusätzlich: eine Chat-Nachricht)
+const MENU_LABELS = { kalender: 'Kalender', tasks: 'Aufgaben', chat: 'Chat' };
 const DEFAULT_ORDER = ['bonus', 'konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine', 'spiele', 'letzterSieg'];
 const DEFAULT_PALETTE = ['#74AFC6', '#86B96C', '#DA8578', '#A692C4', '#E3A857', '#5FA8A0'];
 
@@ -355,6 +355,8 @@ function subscribeDailyActivity() {
   return dailyDocRef().onSnapshot((doc) => {
     dailyActivityData = doc.exists ? doc.data() : { menus: {}, chatSent: false, bonusGiven: false };
     renderHomeChecklist();
+    // Ist schon alles erledigt (z.B. weil sich die Regeln geändert haben)? Dann den Bonus gleich buchen
+    if (!dailyActivityData.bonusGiven && bonusRequirementsMet(dailyActivityData)) maybeAwardBonus().catch((err) => console.error('Tages-Bonus', err));
   });
 }
 
@@ -370,17 +372,28 @@ async function markChatSent() {
   await maybeAwardBonus();
 }
 
+// Alle Bedingungen für den Tages-Bonus erfüllt? (Kalender, Aufgaben und Chat besucht, eine Nachricht geschrieben)
+function bonusRequirementsMet(data) {
+  return DAILY_MENUS.every((m) => data.menus && data.menus[m]) && !!data.chatSent;
+}
+
+// Der Bonus wird genau einmal pro Tag gebucht: "bonusGiven" wird in einer Transaktion gesetzt, und nur wer das schafft,
+// bucht das Geld (so gibt es keine doppelte Zahlung, auch wenn mehrere Geräte gleichzeitig prüfen).
 async function maybeAwardBonus() {
-  const snap = await dailyDocRef().get();
-  const data = snap.exists ? snap.data() : {};
-  if (data.bonusGiven) return;
-  const allMenus = DAILY_MENUS.every((m) => data.menus && data.menus[m]);
-  if (allMenus && data.chatSent) {
-    await dailyDocRef().set({ bonusGiven: true }, { merge: true });
-    const todayLabel = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    await addTransaction(currentUser.name, 0.5, `Tages-Bonus (${todayLabel})`, true);
-    toast('🎉 50 Cent Tages-Bonus erhalten!');
-  }
+  const ref = dailyDocRef();
+  let award = false;
+  await db.runTransaction(async (tx) => {
+    award = false;
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() : {};
+    if (data.bonusGiven || !bonusRequirementsMet(data)) return;
+    tx.set(ref, { bonusGiven: true }, { merge: true });
+    award = true;
+  });
+  if (!award) return;
+  const todayLabel = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  await addTransaction(currentUser.name, 0.5, `Tages-Bonus (${todayLabel})`, true);
+  toast('🎉 50 Cent Tages-Bonus erhalten!');
 }
 
 function renderHomeChecklist() {
@@ -1391,13 +1404,50 @@ function formatTime(ts) {
     d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
 }
 
+// Tag einer Nachricht (lokale Zeit); eine gerade gesendete, noch nicht bestätigte Nachricht zählt als "jetzt"
+function chatDayKey(ts) {
+  return formatDateStr(ts && typeof ts.toDate === 'function' ? ts.toDate() : new Date());
+}
+
+// Beschriftung des Datumstrenners: "Heute, 09.11.2026", "Gestern, 08.11.2026", sonst "Samstag, 07.11.2026"
+function chatDayLabel(dayStr) {
+  const d = parseDateStr(dayStr);
+  const dateText = d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const today = todayStr();
+  if (dayStr === today) return `Heute, ${dateText}`;
+  if (dayStr === addDaysToDateStr(today, -1)) return `Gestern, ${dateText}`;
+  return `${d.toLocaleDateString('de-DE', { weekday: 'long' })}, ${dateText}`;
+}
+
+let chatRenderedDay = '';
+
 function renderChat(docs) {
   const el = document.getElementById('chat-scroll');
+  chatRenderedDay = todayStr();
   if (!docs || !docs.length) {
     el.innerHTML = `<div class="empty-state"><span class="emoji">💬</span>Noch keine Nachrichten.</div>`;
     return;
   }
+  // Vor der ersten Nachricht eines Tages steht ein Trenner mit dem Datum
+  let prevDay = null;
   el.innerHTML = docs.map((m) => {
+    const day = chatDayKey(m.createdAt);
+    const divider = day !== prevDay ? `<div class="chat-date" data-day="${day}"><span>${chatDayLabel(day)}</span></div>` : '';
+    prevDay = day;
+    return divider + renderChatMessage(m);
+  }).join('');
+
+  el.querySelectorAll('[data-toggle]').forEach((node) => {
+    node.addEventListener('click', () => node.classList.toggle('open'));
+  });
+}
+
+// Über Mitternacht offen gelassen: beim Zurückkehren neu zeichnen, damit "Heute" und "Gestern" stimmen
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && lastChatDocs.length && chatRenderedDay && chatRenderedDay !== todayStr()) renderChat(lastChatDocs);
+});
+
+function renderChatMessage(m) {
     if (m.system) {
       const snap = m.ideaSnapshot;
       return `
@@ -1420,11 +1470,6 @@ function renderChat(docs) {
         <div>${escapeHtml(m.text)}</div>
         <div class="msg-time">${formatTime(m.createdAt)}</div>
       </div>`;
-  }).join('');
-
-  el.querySelectorAll('[data-toggle]').forEach((node) => {
-    node.addEventListener('click', () => node.classList.toggle('open'));
-  });
 }
 
 document.getElementById('chat-send-btn').addEventListener('click', sendChatMessage);

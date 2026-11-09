@@ -685,6 +685,9 @@ button.sh-cell[data-sh-shoot]:hover { background: #40545f; }
 }
 .chat-msg .msg-author { font-weight: 700; font-size: 0.82rem; color: var(--msg-text-color, var(--text)); margin-bottom: 2px; }
 .chat-msg .msg-time { font-size: 0.68rem; color: var(--text-muted); margin-top: 4px; text-align: right; }
+.chat-date { align-self: stretch; display: flex; align-items: center; gap: 10px; margin: 12px 0 2px; color: var(--text-muted); font-size: 0.75rem; font-weight: 600; }
+.chat-date::before, .chat-date::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.chat-date:first-child { margin-top: 0; }
 .chat-msg.system {
   align-self: center;
   background: var(--surface-alt);
