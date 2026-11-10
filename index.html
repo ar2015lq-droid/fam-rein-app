@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=31">
+<link rel="stylesheet" href="style.css?v=32">
 </head>
 <body>
 
@@ -142,8 +142,14 @@
           <div id="custom-my-lists"></div>
           <div class="add-bar">
             <input type="text" id="custom-new-list-input" placeholder="Neue Liste...">
+            <select id="custom-new-list-type" aria-label="Art der Liste">
+              <option value="rating">Mit Bewertung</option>
+              <option value="check">Check-Liste</option>
+              <option value="double">Double-Check</option>
+            </select>
             <button class="btn btn-primary btn-small" id="custom-add-list-btn">+</button>
           </div>
+          <div class="section-note" id="custom-new-list-hint">Jeder Eintrag bekommt eine Bewertung von 1 bis 10, auf Wunsch können die Freigegebenen mit + ○ − bewerten.</div>
         </div>
 
         <div id="custom-view-shared" style="display:none;">
@@ -439,6 +445,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=38"></script>
+<script src="app.js?v=39"></script>
 </body>
 </html>

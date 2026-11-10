@@ -702,6 +702,61 @@ function addDish() {
 // Der Besitzer schaltet das pro Liste ein. Bewertet wird von denen, für die die Liste freigegeben ist.
 // Jeder bewertet nur für sich (gespeichert am Eintrag unter "votes", ein Feld pro Person),
 // alle sehen, wer wie bewertet hat. Die Zahl 1 bis 10 des Besitzers bleibt davon unberührt.
+// ----- Listenarten: mit Bewertung (wie bisher), Check-Liste, Double-Check -----
+// Check-Liste: jeder Eintrag hat einen Haken ("checked"). Double-Check: zwei Felder, "JA" = ausgewählt (mit X, "ja")
+// und "OK" = erledigt (mit Haken, "ok"). Haken setzen dürfen alle, für die die Liste freigegeben ist, und der Besitzer.
+// Bei Check-Listen gibt es keine Bewertung (weder die Zahl 1 bis 10 noch + ○ −).
+const CUSTOM_LIST_TYPES = {
+  rating: { label: 'Mit Bewertung', hint: 'Jeder Eintrag bekommt eine Bewertung von 1 bis 10, auf Wunsch können die Freigegebenen mit + ○ − bewerten.' },
+  check: { label: 'Check-Liste', hint: 'Die Einträge werden einfach abgehakt (Haken).' },
+  double: { label: 'Double-Check', hint: 'Zwei Felder je Eintrag: JA = ausgewählt (mit X), OK = erledigt (mit Haken).' }
+};
+const CHECK_FIELDS = { check: ['checked'], double: ['ja', 'ok'] };
+
+function customListType(list) {
+  return list && CUSTOM_LIST_TYPES[list.type] ? list.type : 'rating';   // ältere Listen ohne Angabe: mit Bewertung
+}
+
+function isCheckList(list) {
+  return customListType(list) !== 'rating';
+}
+
+// Eintrag erledigt? (Check-Liste: abgehakt; Double-Check: OK gesetzt)
+function entryDone(list, entry) {
+  const t = customListType(list);
+  return t === 'check' ? !!entry.checked : (t === 'double' ? !!entry.ok : false);
+}
+
+function customListMember(list, name) {
+  return voteSameName(list.owner, name) || (list.sharedWith || []).some((n) => voteSameName(n, name));
+}
+
+// Welche Sortierungen es bei dieser Liste gibt
+function customAllowedSorts(list) {
+  if (isCheckList(list)) return ['manual', 'name-asc', 'name-desc', 'open-first'];
+  return ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc'].concat(list.voting ? ['votes-desc'] : []);
+}
+
+// Haken setzen oder entfernen (field: "checked" bei Check-Listen, "ja" oder "ok" bei Double-Check)
+async function setCustomCheck(list, entryId, field, value) {
+  if (!(CHECK_FIELDS[customListType(list)] || []).includes(field)) return false;
+  if (!customListMember(list, currentUser.name)) { toast('Du kannst hier nichts abhaken.'); return false; }
+  try {
+    await db.collection('customLists').doc(list.id).collection('entries').doc(entryId).update({ [field]: !!value });
+    return true;
+  } catch (err) {
+    console.error('Haken nicht gespeichert', err);
+    toast('Der Haken konnte nicht gespeichert werden.');
+    return false;
+  }
+}
+
+// Ein Kästchen: leer, oder mit X (JA) bzw. Haken (OK, Check)
+function checkBoxHtml(item, field, glyph, cls, label) {
+  const on = !!item[field];
+  return `<button class="cl-cbox ${cls} ${on ? 'on' : ''}" data-check-entry="${item.id}" data-check-field="${field}" aria-pressed="${on}" aria-label="${label}${on ? ' gesetzt' : ''}" title="${label}">${on ? glyph : ''}</button>`;
+}
+
 const VOTE_OPTIONS = [
   { key: 'plus', glyph: '+', label: 'Plus' },
   { key: 'circle', glyph: '○', label: 'Kreis' },
@@ -732,7 +787,7 @@ function voteParticipants(list) {
 }
 
 function canVote(list, name) {
-  return list.voting === true && voteParticipants(list).some((n) => voteSameName(n, name));
+  return !isCheckList(list) && list.voting === true && voteParticipants(list).some((n) => voteSameName(n, name));
 }
 
 function voteOf(entry, name) {
@@ -755,7 +810,7 @@ function voteScore(entry, list) {
   return c.plus - c.minus;
 }
 
-const CUSTOM_SORTS = ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc', 'votes-desc'];
+const CUSTOM_SORTS = ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc', 'votes-desc', 'open-first'];
 
 function entryCreatedMs(e) {
   if (e.createdAt && typeof e.createdAt.toMillis === 'function') return e.createdAt.toMillis();
@@ -789,6 +844,7 @@ function customSortedEntries(entries, list, view) {
   const pos = new Map(manualOrder(entries).map((e, i) => [e.id, i]));
   const base = (a, b) => {
     if (view.sort === 'manual') return pos.get(a.id) - pos.get(b.id);
+    if (view.sort === 'open-first') return ((entryDone(list, a) ? 1 : 0) - (entryDone(list, b) ? 1 : 0)) || (pos.get(a.id) - pos.get(b.id));
     if (view.sort === 'name-desc') return b.name.localeCompare(a.name);
     if (view.sort === 'rating-desc') return (b.rating - a.rating) || a.name.localeCompare(b.name);
     if (view.sort === 'rating-asc') return (a.rating - b.rating) || a.name.localeCompare(b.name);
@@ -861,7 +917,7 @@ async function castVote(list, entryId, vote) {
 
 // Bewertung für diese Liste ein- oder ausschalten (nur der Besitzer)
 async function setListVoting(list, on) {
-  if (!voteSameName(list.owner, currentUser.name)) return false;
+  if (!voteSameName(list.owner, currentUser.name) || isCheckList(list)) return false;
   try {
     await db.collection('customLists').doc(list.id).update({ voting: !!on });
     return true;
@@ -974,7 +1030,7 @@ function renderCustomLists() {
     <div class="custom-list-card">
       <div style="flex:1;">
         <div class="item-text">${escapeHtml(l.title)}</div>
-        ${l.voting ? '<div class="item-meta">Bewertung durch Freigegebene an (+ ○ −)</div>' : ''}
+        ${isCheckList(l) ? `<div class="item-meta">${CUSTOM_LIST_TYPES[customListType(l)].label}${customListType(l) === 'double' ? ' (JA / OK)' : ''}</div>` : (l.voting ? '<div class="item-meta">Bewertung durch Freigegebene an (+ ○ −)</div>' : '')}
       </div>
       <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
       <button class="btn-icon" data-delete-list="${l.id}" title="Liste löschen">🗑️</button>
@@ -987,7 +1043,7 @@ function renderCustomLists() {
     <div class="custom-list-card">
       <div style="flex:1;">
         <div class="item-text">${escapeHtml(l.title)}</div>
-        <div class="item-meta">von <span style="${ownerColor ? `color:${ownerColor};font-weight:600;` : ''}">${escapeHtml(l.owner)}</span>${l.voting ? ' · du kannst bewerten (+ ○ −)' : ''}</div>
+        <div class="item-meta">von <span style="${ownerColor ? `color:${ownerColor};font-weight:600;` : ''}">${escapeHtml(l.owner)}</span>${isCheckList(l) ? ' · ' + CUSTOM_LIST_TYPES[customListType(l)].label + (customListType(l) === 'double' ? ' (JA / OK)' : '') : (l.voting ? ' · du kannst bewerten (+ ○ −)' : '')}</div>
       </div>
       <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
     </div>`;
@@ -1013,14 +1069,24 @@ document.querySelectorAll('[data-custom-view]').forEach((btn) => {
 });
 
 document.getElementById('custom-add-list-btn').addEventListener('click', addCustomList);
+document.getElementById('custom-new-list-type').addEventListener('change', updateCustomNewListHint);
 document.getElementById('custom-new-list-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomList(); });
 
 function addCustomList() {
   const input = document.getElementById('custom-new-list-input');
   const title = input.value.trim();
   if (!title) return;
-  db.collection('customLists').add({ title, owner: currentUser.name, sharedWith: [], createdAt: FieldValue.serverTimestamp() });
+  const typeSel = document.getElementById('custom-new-list-type');
+  const type = typeSel && CUSTOM_LIST_TYPES[typeSel.value] ? typeSel.value : 'rating';
+  db.collection('customLists').add({ title, type, owner: currentUser.name, sharedWith: [], createdAt: FieldValue.serverTimestamp() });
   input.value = '';
+}
+
+// Erklärung zur gewählten Listenart unter dem Eingabefeld
+function updateCustomNewListHint() {
+  const sel = document.getElementById('custom-new-list-type');
+  const hint = document.getElementById('custom-new-list-hint');
+  if (sel && hint) hint.textContent = (CUSTOM_LIST_TYPES[sel.value] || CUSTOM_LIST_TYPES.rating).hint;
 }
 
 async function deleteCustomList(listId) {
@@ -1041,7 +1107,7 @@ function openCustomListModal(list) {
   activeCustomListId = list.id;
   activeCustomIsOwner = list.owner.toLowerCase() === currentUser.name.toLowerCase();
   activeCustomEditingEntryId = null;
-  activeCustomSort = list.manual ? 'manual' : 'name-asc';   // hat der Besitzer sortiert, gilt seine Reihenfolge
+  activeCustomSort = (list.manual || isCheckList(list)) ? 'manual' : 'name-asc';   // hat der Besitzer sortiert (oder ist es eine Check-Liste), gilt die Reihenfolge der Liste
   activeCustomVoteFrom = '';
   activeCustomVoteFirst = null;
   if (activeCustomIsOwner) {
@@ -1079,6 +1145,9 @@ function closeCustomListModal() {
 
 function renderCustomModalBody(list) {
   list = customListsRaw.find((l) => l.id === list.id) || list;   // immer der aktuelle Stand der Liste
+  const kind = customListType(list);
+  const checkList = kind !== 'rating';
+  if (checkList && list.voting) list = { ...list, voting: false };   // Check-Listen haben keine Bewertung
   const root = document.getElementById('modal-root');
   const isOwner = activeCustomIsOwner;
 
@@ -1097,7 +1166,7 @@ function renderCustomModalBody(list) {
   const ownerView = isOwner && list.voting === true && participants.length > 0;   // Ansichtsleiste: nur für den Besitzer
   const from = ownerView ? (participants.find((n) => voteSameName(n, activeCustomVoteFrom)) || '') : '';
   const first = ownerView ? activeCustomVoteFirst : null;
-  if (!list.voting && /^votes-/.test(activeCustomSort)) activeCustomSort = 'name-asc';
+  if (!customAllowedSorts(list).includes(activeCustomSort)) activeCustomSort = checkList ? 'manual' : 'name-asc';
   const entries = customSortedEntries(activeCustomEntries, list, { sort: activeCustomSort, from, first });
   const canMove = isOwner && activeCustomSort === 'manual' && !first;
 
@@ -1106,17 +1175,20 @@ function renderCustomModalBody(list) {
       return `
         <div class="cl-entry"><div class="list-item">
           <input type="text" data-custom-edit-name="${item.id}" value="${escapeHtml(item.name)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
-          <select data-custom-edit-rating="${item.id}">${ratingOptionsHtml(item.rating)}</select>
+          ${checkList ? '' : `<select data-custom-edit-rating="${item.id}">${ratingOptionsHtml(item.rating)}</select>`}
           <button class="btn-icon" data-custom-save-entry="${item.id}" title="Speichern">✓</button>
           <button class="btn-icon" data-custom-cancel-entry="1" title="Abbrechen">✕</button>
         </div></div>`;
     }
     const votesHtml = customVotesHtml(list, item, from);
+    const boxes = kind === 'check' ? `<span class="cl-checks">${checkBoxHtml(item, 'checked', '✓', 'ok', 'Erledigt')}</span>`
+      : (kind === 'double' ? `<span class="cl-checks">${checkBoxHtml(item, 'ja', 'X', 'x', 'JA')}${checkBoxHtml(item, 'ok', '✓', 'ok', 'OK')}</span>` : '');
     return `
       <div class="cl-entry">
-        <div class="list-item ${votesHtml ? 'has-votes' : ''}">
+        <div class="list-item ${votesHtml ? 'has-votes' : ''} ${checkList && entryDone(list, item) ? 'done' : ''}">
+          ${boxes}
           <div class="item-text" style="flex:1;">${escapeHtml(item.name)}</div>
-          <span class="task-due">${item.rating}/10</span>
+          ${checkList ? '' : `<span class="task-due">${item.rating}/10</span>`}
           ${canMove ? `<span class="cl-move"><button class="btn-icon" data-move-entry="${item.id}" data-move-dir="-1" title="Nach oben" aria-label="Nach oben" ${idx === 0 ? 'disabled' : ''}>▲</button><button class="btn-icon" data-move-entry="${item.id}" data-move-dir="1" title="Nach unten" aria-label="Nach unten" ${idx === entries.length - 1 ? 'disabled' : ''}>▼</button></span>` : ''}
           ${isOwner ? `
             <button class="btn-icon" data-custom-edit-entry="${item.id}" title="Bearbeiten">✏️</button>
@@ -1125,6 +1197,17 @@ function renderCustomModalBody(list) {
         ${votesHtml}
       </div>`;
   }).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine Einträge.</div>`;
+  const checkHeadHtml = (kind === 'double' && entries.length) ? `<div class="cl-check-head"><span>JA</span><span>OK</span></div>` : '';
+
+  // Fortschritt bei Check-Listen
+  let checkInfoHtml = '';
+  if (checkList) {
+    const total = activeCustomEntries.length;
+    checkInfoHtml = kind === 'check'
+      ? `${activeCustomEntries.filter((e) => e.checked).length} von ${total} abgehakt`
+      : `JA: ${activeCustomEntries.filter((e) => e.ja).length} · OK: ${activeCustomEntries.filter((e) => e.ok).length} (von ${total}). JA = ausgewählt, OK = erledigt.`;
+    checkInfoHtml = `<div class="section-note" style="margin-top:10px;">${checkInfoHtml}</div>`;
+  }
 
   // Ansicht des Besitzers: Bewertung nur von einer Person zeigen, Einträge mit +, ○ oder − zuerst
   const firstOpt = VOTE_OPTIONS.find((o) => o.key === first);
@@ -1154,7 +1237,7 @@ function renderCustomModalBody(list) {
   const addRowHtml = isOwner ? `
     <div class="add-bar">
       <input type="text" id="custom-entry-name-input" placeholder="Name...">
-      <select id="custom-entry-rating-input">${ratingOptionsHtml(5)}</select>
+      ${checkList ? '' : `<select id="custom-entry-rating-input">${ratingOptionsHtml(5)}</select>`}
       <button class="btn btn-primary btn-small" id="custom-entry-add-btn">+</button>
     </div>` : '';
 
@@ -1170,11 +1253,12 @@ function renderCustomModalBody(list) {
             <input type="checkbox" data-share-user="${escapeHtml(u.name)}" ${checked ? 'checked' : ''}>
           </div>`;
       }).join('')}
+      ${checkList ? `<div class="section-note" style="margin-top:8px;">Wer die Liste sieht, kann Haken setzen und entfernen.</div>` : `
       <div class="custom-share-row" style="margin-top:8px;border-top:1px solid var(--border);padding-top:10px;">
         <label for="custom-voting-toggle">Freigegebene dürfen die Einträge bewerten (+ ○ −)</label>
         <input type="checkbox" id="custom-voting-toggle" ${list.voting ? 'checked' : ''}>
       </div>
-      <div class="section-note">Jeder bewertet nur für sich, alle sehen, wer wie bewertet hat.</div>
+      <div class="section-note">Jeder bewertet nur für sich, alle sehen, wer wie bewertet hat.</div>`}
     </div>` : (() => {
       const ownerData = usersMap[list.owner.toLowerCase()];
       const ownerColor = ownerData ? userColor(ownerData, 'color') : null;
@@ -1212,15 +1296,17 @@ function renderCustomModalBody(list) {
             <option value="manual" ${activeCustomSort === 'manual' ? 'selected' : ''}>${isOwner ? 'Meine Reihenfolge (verschieben)' : 'Reihenfolge des Besitzers'}</option>
             <option value="name-asc" ${activeCustomSort === 'name-asc' ? 'selected' : ''}>Name A–Z</option>
             <option value="name-desc" ${activeCustomSort === 'name-desc' ? 'selected' : ''}>Name Z–A</option>
+            ${checkList ? `<option value="open-first" ${activeCustomSort === 'open-first' ? 'selected' : ''}>Offene zuerst</option>` : `
             <option value="rating-desc" ${activeCustomSort === 'rating-desc' ? 'selected' : ''}>Bewertung hoch → niedrig</option>
             <option value="rating-asc" ${activeCustomSort === 'rating-asc' ? 'selected' : ''}>Bewertung niedrig → hoch</option>
-            ${list.voting ? `<option value="votes-desc" ${activeCustomSort === 'votes-desc' ? 'selected' : ''}>Beliebtheit (+ minus −)</option>` : ''}
+            ${list.voting ? `<option value="votes-desc" ${activeCustomSort === 'votes-desc' ? 'selected' : ''}>Beliebtheit (+ minus −)</option>` : ''}`}
           </select>
         </div>
         ${viewBarHtml}
         ${moveHintHtml}
         ${voteInfoHtml}
-        <div style="margin-top:10px;">${entriesHtml}</div>
+        ${checkInfoHtml}
+        <div style="margin-top:10px;">${checkHeadHtml}${entriesHtml}</div>
         ${addRowHtml}
         ${shareHtml}
         <h3 style="margin-top:18px;font-size:1rem;">Kommentare</h3>
@@ -1275,6 +1361,16 @@ function renderCustomModalBody(list) {
     if (commentInput) commentInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomComment(list); });
   }
 
+  // Haken setzen / entfernen (Check-Liste, Double-Check)
+  document.querySelectorAll('[data-check-entry]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const entry = activeCustomEntries.find((e) => e.id === btn.dataset.checkEntry);
+      if (!entry) return;
+      const field = btn.dataset.checkField;
+      setCustomCheck(list, entry.id, field, !entry[field]);
+    });
+  });
+
   // Bewerten: Knopf antippen setzt die eigene Bewertung, dieselbe noch einmal nimmt sie zurück
   document.querySelectorAll('[data-vote-entry]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1319,8 +1415,9 @@ function saveCustomEntryEdit(list, entryId) {
   const ratingSelect = document.querySelector(`[data-custom-edit-rating="${CSS.escape(entryId)}"]`);
   const name = nameInput.value.trim();
   if (!name) return;
-  const rating = parseInt(ratingSelect.value, 10);
-  db.collection('customLists').doc(list.id).collection('entries').doc(entryId).update({ name, rating });
+  const changes = { name };
+  if (ratingSelect && !isCheckList(list)) changes.rating = parseInt(ratingSelect.value, 10);   // Check-Listen haben keine Bewertung
+  db.collection('customLists').doc(list.id).collection('entries').doc(entryId).update(changes);
   activeCustomEditingEntryId = null;
 }
 
@@ -1334,8 +1431,11 @@ function addCustomEntry(list) {
   const ratingSelect = document.getElementById('custom-entry-rating-input');
   const name = nameInput.value.trim();
   if (!name) return;
-  const rating = parseInt(ratingSelect.value, 10);
-  const entry = { name, rating, createdAt: FieldValue.serverTimestamp() };
+  const kind = customListType(list);
+  const entry = { name, createdAt: FieldValue.serverTimestamp() };
+  if (kind === 'rating') entry.rating = parseInt(ratingSelect.value, 10);
+  else if (kind === 'check') entry.checked = false;
+  else { entry.ja = false; entry.ok = false; }
   const orders = activeCustomEntries.filter((e) => Number.isFinite(e.order)).map((e) => e.order);
   if (orders.length) entry.order = Math.max(...orders) + 1;   // in der eigenen Reihenfolge ganz hinten
   db.collection('customLists').doc(list.id).collection('entries').add(entry);
