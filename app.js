@@ -703,13 +703,15 @@ function addDish() {
 // Jeder bewertet nur für sich (gespeichert am Eintrag unter "votes", ein Feld pro Person),
 // alle sehen, wer wie bewertet hat. Die Zahl 1 bis 10 des Besitzers bleibt davon unberührt.
 // ----- Listenarten: mit Bewertung (wie bisher), Check-Liste, Double-Check -----
-// Check-Liste: jeder Eintrag hat einen Haken ("checked"). Double-Check: zwei Felder, "JA" = ausgewählt (mit X, "ja")
-// und "OK" = erledigt (mit Haken, "ok"). Haken setzen dürfen alle, für die die Liste freigegeben ist, und der Besitzer.
+// Check-Liste: jeder Eintrag hat einen Haken ("checked"), den alle setzen dürfen, für die die Liste freigegeben ist (und der Besitzer).
+// Double-Check: zwei Felder. "JA" = ausgewählt (mit X): das darf jeder setzen, für den die Liste freigegeben ist (und der Besitzer),
+// das X gehört dem, der es gesetzt hat ("jaBy"), wird in dessen Farbe gezeigt und kann nur von ihm wieder entfernt werden.
+// "OK" = erledigt (mit Haken): das setzt und entfernt nur der Besitzer der Liste.
 // Bei Check-Listen gibt es keine Bewertung (weder die Zahl 1 bis 10 noch + ○ −).
 const CUSTOM_LIST_TYPES = {
   rating: { label: 'Mit Bewertung', hint: 'Jeder Eintrag bekommt eine Bewertung von 1 bis 10, auf Wunsch können die Freigegebenen mit + ○ − bewerten.' },
   check: { label: 'Check-Liste', hint: 'Die Einträge werden einfach abgehakt (Haken).' },
-  double: { label: 'Double-Check', hint: 'Zwei Felder je Eintrag: JA = ausgewählt (mit X), OK = erledigt (mit Haken).' }
+  double: { label: 'Double-Check', hint: 'Zwei Felder je Eintrag: JA = ausgewählt (mit X, jeder in seiner Farbe), OK = erledigt (mit Haken, nur der Besitzer).' }
 };
 const CHECK_FIELDS = { check: ['checked'], double: ['ja', 'ok'] };
 
@@ -737,18 +739,80 @@ function customAllowedSorts(list) {
   return ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc'].concat(list.voting ? ['votes-desc'] : []);
 }
 
-// Haken setzen oder entfernen (field: "checked" bei Check-Listen, "ja" oder "ok" bei Double-Check)
+// Wer hat das X (JA) gesetzt? Ältere Einträge ohne Angabe gelten als vom Besitzer der Liste gesetzt.
+function jaSetter(list, entry) {
+  return entry.ja ? (entry.jaBy || list.owner) : null;
+}
+
+// Kann ich das X dieses Eintrags entfernen? Nur das eigene; das X von jemandem, der nicht mehr freigegeben ist, kann der Besitzer entfernen.
+function canReleaseJa(list, by, name) {
+  return voteSameName(by, name) || (!customListMember(list, by) && voteSameName(list.owner, name));
+}
+
+// Haken setzen oder entfernen (field: "checked" bei Check-Listen, "ja" oder "ok" bei Double-Check).
+// JA: jeder Freigegebene setzt sein eigenes X; ein fremdes X wird nie überschrieben oder entfernt (auch nicht bei gleichzeitigem Antippen:
+// das Prüfen und Setzen passiert in einem Schritt). OK: nur der Besitzer.
 async function setCustomCheck(list, entryId, field, value) {
-  if (!(CHECK_FIELDS[customListType(list)] || []).includes(field)) return false;
-  if (!customListMember(list, currentUser.name)) { toast('Du kannst hier nichts abhaken.'); return false; }
+  const type = customListType(list);
+  if (!(CHECK_FIELDS[type] || []).includes(field)) return false;
+  const me = currentUser.name;
+  if (!customListMember(list, me)) { toast('Du kannst hier nichts abhaken.'); return false; }
+  if (type === 'double' && field === 'ok' && !voteSameName(list.owner, me)) { toast('Das OK kann nur der Besitzer der Liste setzen.'); return false; }
+  const ref = db.collection('customLists').doc(list.id).collection('entries').doc(entryId);
   try {
-    await db.collection('customLists').doc(list.id).collection('entries').doc(entryId).update({ [field]: !!value });
+    if (type === 'double' && field === 'ja') {
+      let blockedBy = null;
+      await db.runTransaction(async (tx) => {
+        blockedBy = null;
+        const snap = await tx.get(ref);
+        if (!snap.exists) throw new Error('Eintrag gibt es nicht mehr');
+        const by = jaSetter(list, snap.data());
+        if (value) {
+          if (!by) tx.update(ref, { ja: true, jaBy: me });
+          else if (!voteSameName(by, me)) blockedBy = by;          // schon von jemand anderem gesetzt
+        } else if (by) {
+          if (canReleaseJa(list, by, me)) tx.update(ref, { ja: false, jaBy: null });
+          else blockedBy = by;                                     // fremdes X bleibt
+        }
+      });
+      if (blockedBy) { toast(`Das X hat ${blockedBy} gesetzt – nur ${blockedBy} kann es ändern.`); return false; }
+      return true;
+    }
+    await ref.update({ [field]: !!value });
     return true;
   } catch (err) {
     console.error('Haken nicht gespeichert', err);
     toast('Der Haken konnte nicht gespeichert werden.');
     return false;
   }
+}
+
+function colorWithAlpha(color, alpha) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color || '').trim());
+  if (!m) return 'transparent';
+  let h = m[1];
+  if (h.length === 3) h = h.split('').map((x) => x + x).join('');
+  const n = parseInt(h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+// JA: leer oder ein X in der Farbe dessen, der es gesetzt hat; fremde X sind gesperrt
+function jaBoxHtml(list, item) {
+  const by = jaSetter(list, item);
+  const locked = !!by && !canReleaseJa(list, by, currentUser.name);
+  const u = by ? usersMap[String(by).toLowerCase()] : null;
+  const col = (u && userColor(u, 'color')) || '#E3A857';
+  const style = by ? ` style="border-color:${col};color:${col};background:${colorWithAlpha(col, 0.2)};"` : '';
+  const label = by ? `JA, gesetzt von ${by}` : 'JA';
+  return `<button class="cl-cbox x ${by ? 'on' : ''} ${locked ? 'locked' : ''}" data-check-entry="${item.id}" data-check-field="ja"${style} aria-pressed="${!!by}"${locked ? ' aria-disabled="true"' : ''} aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${by ? 'X' : ''}</button>`;
+}
+
+// OK: leer oder Haken; nur der Besitzer kann es setzen
+function okBoxHtml(list, item) {
+  const on = !!item.ok;
+  const locked = !voteSameName(list.owner, currentUser.name);
+  const label = locked ? 'OK (nur der Besitzer)' : 'OK';
+  return `<button class="cl-cbox ok ${on ? 'on' : ''} ${locked ? 'locked' : ''}" data-check-entry="${item.id}" data-check-field="ok" aria-pressed="${on}"${locked ? ' aria-disabled="true"' : ''} aria-label="${label}${on ? ' gesetzt' : ''}" title="${label}">${on ? '✓' : ''}</button>`;
 }
 
 // Ein Kästchen: leer, oder mit X (JA) bzw. Haken (OK, Check)
@@ -1182,7 +1246,7 @@ function renderCustomModalBody(list) {
     }
     const votesHtml = customVotesHtml(list, item, from);
     const boxes = kind === 'check' ? `<span class="cl-checks">${checkBoxHtml(item, 'checked', '✓', 'ok', 'Erledigt')}</span>`
-      : (kind === 'double' ? `<span class="cl-checks">${checkBoxHtml(item, 'ja', 'X', 'x', 'JA')}${checkBoxHtml(item, 'ok', '✓', 'ok', 'OK')}</span>` : '');
+      : (kind === 'double' ? `<span class="cl-checks">${jaBoxHtml(list, item)}${okBoxHtml(list, item)}</span>` : '');
     return `
       <div class="cl-entry">
         <div class="list-item ${votesHtml ? 'has-votes' : ''} ${checkList && entryDone(list, item) ? 'done' : ''}">
@@ -1205,7 +1269,7 @@ function renderCustomModalBody(list) {
     const total = activeCustomEntries.length;
     checkInfoHtml = kind === 'check'
       ? `${activeCustomEntries.filter((e) => e.checked).length} von ${total} abgehakt`
-      : `JA: ${activeCustomEntries.filter((e) => e.ja).length} · OK: ${activeCustomEntries.filter((e) => e.ok).length} (von ${total}). JA = ausgewählt, OK = erledigt.`;
+      : `JA: ${activeCustomEntries.filter((e) => e.ja).length} · OK: ${activeCustomEntries.filter((e) => e.ok).length} (von ${total}). JA = ausgewählt (jeder setzt sein eigenes X), OK = erledigt (setzt der Besitzer).`;
     checkInfoHtml = `<div class="section-note" style="margin-top:10px;">${checkInfoHtml}</div>`;
   }
 
@@ -1253,7 +1317,7 @@ function renderCustomModalBody(list) {
             <input type="checkbox" data-share-user="${escapeHtml(u.name)}" ${checked ? 'checked' : ''}>
           </div>`;
       }).join('')}
-      ${checkList ? `<div class="section-note" style="margin-top:8px;">Wer die Liste sieht, kann Haken setzen und entfernen.</div>` : `
+      ${checkList ? `<div class="section-note" style="margin-top:8px;">${kind === 'double' ? 'Freigegebene können bei JA ihr eigenes X setzen (das X eines anderen ändert niemand). Das OK setzt nur du.' : 'Wer die Liste sieht, kann Haken setzen und entfernen.'}</div>` : `
       <div class="custom-share-row" style="margin-top:8px;border-top:1px solid var(--border);padding-top:10px;">
         <label for="custom-voting-toggle">Freigegebene dürfen die Einträge bewerten (+ ○ −)</label>
         <input type="checkbox" id="custom-voting-toggle" ${list.voting ? 'checked' : ''}>
@@ -1367,6 +1431,13 @@ function renderCustomModalBody(list) {
       const entry = activeCustomEntries.find((e) => e.id === btn.dataset.checkEntry);
       if (!entry) return;
       const field = btn.dataset.checkField;
+      if (kind === 'double' && field === 'ja') {
+        const by = jaSetter(list, entry);
+        if (by && !canReleaseJa(list, by, currentUser.name)) { toast(`Das X hat ${by} gesetzt – nur ${by} kann es ändern.`); return; }
+        setCustomCheck(list, entry.id, 'ja', !by);       // frei: mein X setzen, mein eigenes X: entfernen
+        return;
+      }
+      if (kind === 'double' && field === 'ok' && !isOwner) { toast('Das OK kann nur der Besitzer der Liste setzen.'); return; }
       setCustomCheck(list, entry.id, field, !entry[field]);
     });
   });
@@ -1435,7 +1506,7 @@ function addCustomEntry(list) {
   const entry = { name, createdAt: FieldValue.serverTimestamp() };
   if (kind === 'rating') entry.rating = parseInt(ratingSelect.value, 10);
   else if (kind === 'check') entry.checked = false;
-  else { entry.ja = false; entry.ok = false; }
+  else { entry.ja = false; entry.jaBy = null; entry.ok = false; }
   const orders = activeCustomEntries.filter((e) => Number.isFinite(e.order)).map((e) => e.order);
   if (orders.length) entry.order = Math.max(...orders) + 1;   // in der eigenen Reihenfolge ganz hinten
   db.collection('customLists').doc(list.id).collection('entries').add(entry);
