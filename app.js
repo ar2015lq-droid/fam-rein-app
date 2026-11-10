@@ -735,7 +735,8 @@ function customListMember(list, name) {
 
 // Welche Sortierungen es bei dieser Liste gibt
 function customAllowedSorts(list) {
-  if (isCheckList(list)) return ['manual', 'name-asc', 'name-desc', 'open-first'];
+  if (customListType(list) === 'check') return ['manual', 'name-asc', 'name-desc', 'open-first', 'done-first'];
+  if (customListType(list) === 'double') return ['manual', 'name-asc', 'name-desc', 'ja-set-first', 'ja-unset-first', 'open-first'];
   return ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc'].concat(list.voting ? ['votes-desc'] : []);
 }
 
@@ -874,7 +875,7 @@ function voteScore(entry, list) {
   return c.plus - c.minus;
 }
 
-const CUSTOM_SORTS = ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc', 'votes-desc', 'open-first'];
+const CUSTOM_SORTS = ['manual', 'name-asc', 'name-desc', 'rating-desc', 'rating-asc', 'votes-desc', 'open-first', 'done-first', 'ja-set-first', 'ja-unset-first'];
 
 function entryCreatedMs(e) {
   if (e.createdAt && typeof e.createdAt.toMillis === 'function') return e.createdAt.toMillis();
@@ -909,6 +910,9 @@ function customSortedEntries(entries, list, view) {
   const base = (a, b) => {
     if (view.sort === 'manual') return pos.get(a.id) - pos.get(b.id);
     if (view.sort === 'open-first') return ((entryDone(list, a) ? 1 : 0) - (entryDone(list, b) ? 1 : 0)) || (pos.get(a.id) - pos.get(b.id));
+    if (view.sort === 'done-first') return ((entryDone(list, a) ? 0 : 1) - (entryDone(list, b) ? 0 : 1)) || (pos.get(a.id) - pos.get(b.id));
+    if (view.sort === 'ja-set-first') return ((a.ja ? 0 : 1) - (b.ja ? 0 : 1)) || (pos.get(a.id) - pos.get(b.id));       // X (JA) gesetzt zuerst
+    if (view.sort === 'ja-unset-first') return ((a.ja ? 1 : 0) - (b.ja ? 1 : 0)) || (pos.get(a.id) - pos.get(b.id));     // X (JA) nicht gesetzt zuerst
     if (view.sort === 'name-desc') return b.name.localeCompare(a.name);
     if (view.sort === 'rating-desc') return (b.rating - a.rating) || a.name.localeCompare(b.name);
     if (view.sort === 'rating-asc') return (a.rating - b.rating) || a.name.localeCompare(b.name);
@@ -918,6 +922,52 @@ function customSortedEntries(entries, list, view) {
   if (!view.first) return entries.slice().sort(base);
   return entries.slice().sort((a, b) =>
     (voteCountFor(b, list, view.first, view.from) - voteCountFor(a, list, view.first, view.from)) || base(a, b));
+}
+
+// Reihenfolge der eigenen Listen: erst Listen mit gespeicherter Position, danach die ohne (in der Reihenfolge des Anlegens)
+function orderedLists(lists) {
+  return lists.slice().sort((a, b) => {
+    const ao = Number.isFinite(a.order);
+    const bo = Number.isFinite(b.order);
+    if (ao && bo) return a.order - b.order || a.title.localeCompare(b.title);
+    if (ao !== bo) return ao ? -1 : 1;
+    const ca = entryCreatedMs(a);
+    const cb = entryCreatedMs(b);
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+// Mit mir geteilte Listen: nach Besitzer, innerhalb davon in der Reihenfolge, die der Besitzer festgelegt hat
+function sharedListOrder(lists) {
+  const byOwner = new Map();
+  lists.forEach((l) => {
+    const k = l.owner.toLowerCase();
+    if (!byOwner.has(k)) byOwner.set(k, []);
+    byOwner.get(k).push(l);
+  });
+  return [...byOwner.keys()].sort((a, b) => a.localeCompare(b)).flatMap((k) => orderedLists(byOwner.get(k)));
+}
+
+// Eine eigene Liste um eine Stelle verschieben (dir = -1 nach oben, 1 nach unten). Beim ersten Verschieben bekommen
+// alle eigenen Listen feste Positionen. Nur der Besitzer kann seine Listen verschieben.
+async function moveCustomList(listId, dir) {
+  const me = currentUser.name;
+  const mine = orderedLists(customListsRaw.filter((l) => voteSameName(l.owner, me)));
+  const i = mine.findIndex((l) => l.id === listId);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= mine.length) return false;
+  [mine[i], mine[j]] = [mine[j], mine[i]];
+  try {
+    const batch = db.batch();
+    mine.forEach((l, k) => { if (l.order !== k) batch.update(db.collection('customLists').doc(l.id), { order: k }); });
+    await batch.commit();
+    return true;
+  } catch (err) {
+    console.error('Liste verschieben fehlgeschlagen', err);
+    toast('Die Liste konnte nicht verschoben werden.');
+    return false;
+  }
 }
 
 // Einen Eintrag in der eigenen Reihenfolge um eine Stelle verschieben (dir = -1 nach oben, 1 nach unten); nur der Besitzer.
@@ -1084,18 +1134,21 @@ function renderCustomLists() {
   const sharedEl = document.getElementById('custom-shared-lists');
   if (!mineEl || !sharedEl) return;
 
-  const mine = customListsRaw.filter((l) => l.owner.toLowerCase() === currentUser.name.toLowerCase());
-  const shared = customListsRaw.filter((l) =>
+  const mine = orderedLists(customListsRaw.filter((l) => l.owner.toLowerCase() === currentUser.name.toLowerCase()));
+  const shared = sharedListOrder(customListsRaw.filter((l) =>
     l.owner.toLowerCase() !== currentUser.name.toLowerCase() &&
     (l.sharedWith || []).some((n) => n.toLowerCase() === currentUser.name.toLowerCase())
-  );
+  ));
+  // Pfeile zum Verschieben (nur bei mindestens zwei eigenen Listen)
+  const moveHtml = (l, i) => mine.length < 2 ? '' : `<span class="cl-move cl-list-move"><button class="btn-icon" data-move-list="${l.id}" data-move-dir="-1" title="Nach oben" aria-label="Liste nach oben" ${i === 0 ? 'disabled' : ''}>▲</button><button class="btn-icon" data-move-list="${l.id}" data-move-dir="1" title="Nach unten" aria-label="Liste nach unten" ${i === mine.length - 1 ? 'disabled' : ''}>▼</button></span>`;
 
-  mineEl.innerHTML = mine.length ? mine.map((l) => `
+  mineEl.innerHTML = mine.length ? mine.map((l, i) => `
     <div class="custom-list-card">
       <div style="flex:1;">
         <div class="item-text">${escapeHtml(l.title)}</div>
         ${isCheckList(l) ? `<div class="item-meta">${CUSTOM_LIST_TYPES[customListType(l)].label}${customListType(l) === 'double' ? ' (JA / OK)' : ''}</div>` : (l.voting ? '<div class="item-meta">Bewertung durch Freigegebene an (+ ○ −)</div>' : '')}
       </div>
+      ${moveHtml(l, i)}
       <button class="btn btn-secondary btn-small" data-open-list="${l.id}">Öffnen</button>
       <button class="btn-icon" data-delete-list="${l.id}" title="Liste löschen">🗑️</button>
     </div>`).join('') : `<div class="empty-state"><span class="emoji">📋</span>Noch keine eigene Liste.</div>`;
@@ -1122,6 +1175,9 @@ function renderCustomLists() {
   document.querySelectorAll('[data-delete-list]').forEach((btn) => {
     btn.addEventListener('click', () => deleteCustomList(btn.dataset.deleteList));
   });
+  document.querySelectorAll('[data-move-list]').forEach((btn) => {
+    btn.addEventListener('click', () => moveCustomList(btn.dataset.moveList, parseInt(btn.dataset.moveDir, 10)));
+  });
 }
 
 document.querySelectorAll('[data-custom-view]').forEach((btn) => {
@@ -1142,7 +1198,10 @@ function addCustomList() {
   if (!title) return;
   const typeSel = document.getElementById('custom-new-list-type');
   const type = typeSel && CUSTOM_LIST_TYPES[typeSel.value] ? typeSel.value : 'rating';
-  db.collection('customLists').add({ title, type, owner: currentUser.name, sharedWith: [], createdAt: FieldValue.serverTimestamp() });
+  const data = { title, type, owner: currentUser.name, sharedWith: [], createdAt: FieldValue.serverTimestamp() };
+  const orders = customListsRaw.filter((l) => voteSameName(l.owner, currentUser.name) && Number.isFinite(l.order)).map((l) => l.order);
+  if (orders.length) data.order = Math.max(...orders) + 1;   // neue Liste steht in der eigenen Reihenfolge ganz hinten
+  db.collection('customLists').add(data);
   input.value = '';
 }
 
@@ -1360,10 +1419,13 @@ function renderCustomModalBody(list) {
             <option value="manual" ${activeCustomSort === 'manual' ? 'selected' : ''}>${isOwner ? (checkList ? 'Meine Reihenfolge' : 'Meine Reihenfolge (verschieben)') : 'Reihenfolge des Besitzers'}</option>
             <option value="name-asc" ${activeCustomSort === 'name-asc' ? 'selected' : ''}>Name A–Z</option>
             <option value="name-desc" ${activeCustomSort === 'name-desc' ? 'selected' : ''}>Name Z–A</option>
-            ${checkList ? `<option value="open-first" ${activeCustomSort === 'open-first' ? 'selected' : ''}>Offene zuerst</option>` : `
+            ${kind === 'check' ? `<option value="open-first" ${activeCustomSort === 'open-first' ? 'selected' : ''}>Offene zuerst</option>
+            <option value="done-first" ${activeCustomSort === 'done-first' ? 'selected' : ''}>Abgehakte zuerst</option>` : (kind === 'double' ? `<option value="ja-set-first" ${activeCustomSort === 'ja-set-first' ? 'selected' : ''}>X gesetzt zuerst</option>
+            <option value="ja-unset-first" ${activeCustomSort === 'ja-unset-first' ? 'selected' : ''}>X nicht gesetzt zuerst</option>
+            <option value="open-first" ${activeCustomSort === 'open-first' ? 'selected' : ''}>Offene zuerst (ohne OK)</option>` : `
             <option value="rating-desc" ${activeCustomSort === 'rating-desc' ? 'selected' : ''}>Bewertung hoch → niedrig</option>
             <option value="rating-asc" ${activeCustomSort === 'rating-asc' ? 'selected' : ''}>Bewertung niedrig → hoch</option>
-            ${list.voting ? `<option value="votes-desc" ${activeCustomSort === 'votes-desc' ? 'selected' : ''}>Beliebtheit (+ minus −)</option>` : ''}`}
+            ${list.voting ? `<option value="votes-desc" ${activeCustomSort === 'votes-desc' ? 'selected' : ''}>Beliebtheit (+ minus −)</option>` : ''}`)}
           </select>
         </div>
         ${viewBarHtml}
