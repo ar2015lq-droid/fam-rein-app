@@ -1287,13 +1287,13 @@ function renderCustomModalBody(list) {
     </div>` : '';
 
   root.innerHTML = `
-    <div class="modal-backdrop">
-      <div class="modal-box" style="max-width:440px;width:92%;text-align:left;max-height:88vh;overflow-y:auto;">
+    <div class="modal-backdrop ${checkList ? 'cl-backdrop-compact' : ''}">
+      <div class="modal-box custom-modal-box ${checkList ? 'cl-compact' : ''}" style="max-width:440px;width:92%;text-align:left;max-height:88vh;overflow-y:auto;">
         <h3>${escapeHtml(list.title)}</h3>
         <div class="list-toolbar" style="justify-content:flex-start;gap:8px;margin-top:10px;">
           <label style="font-size:0.82rem;color:var(--text-muted);align-self:center;">Sortieren:</label>
           <select class="custom-sort-select" id="custom-sort-select">
-            <option value="manual" ${activeCustomSort === 'manual' ? 'selected' : ''}>${isOwner ? 'Meine Reihenfolge (verschieben)' : 'Reihenfolge des Besitzers'}</option>
+            <option value="manual" ${activeCustomSort === 'manual' ? 'selected' : ''}>${isOwner ? (checkList ? 'Meine Reihenfolge' : 'Meine Reihenfolge (verschieben)') : 'Reihenfolge des Besitzers'}</option>
             <option value="name-asc" ${activeCustomSort === 'name-asc' ? 'selected' : ''}>Name A–Z</option>
             <option value="name-desc" ${activeCustomSort === 'name-desc' ? 'selected' : ''}>Name Z–A</option>
             ${checkList ? `<option value="open-first" ${activeCustomSort === 'open-first' ? 'selected' : ''}>Offene zuerst</option>` : `

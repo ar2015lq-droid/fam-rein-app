@@ -904,6 +904,45 @@ button.sh-cell[data-sh-shoot]:hover { background: #40545f; }
 .cl-move .btn-icon { padding: 0 6px; line-height: 1.15; font-size: 0.8rem; }
 .cl-move .btn-icon:disabled { opacity: 0.3; cursor: default; }
 #custom-new-list-type { flex: 0 0 auto; width: auto; max-width: 42%; }
+/* Listenfenster: lässt sich nie nach links oder rechts verschieben; lange Wörter werden umbrochen */
+.custom-modal-box { overflow-x: hidden; touch-action: pan-y; overscroll-behavior-x: none; overflow-wrap: anywhere; }
+.custom-modal-box .list-item { min-width: 0; }
+.custom-modal-box .item-text { min-width: 0; overflow-wrap: anywhere; }
+.custom-modal-box .custom-sort-select { min-width: 0; max-width: 100%; }
+.custom-modal-box .list-toolbar { flex-wrap: wrap; }
+/* Liste mit Bewertung: bei wenig Platz rutschen Zahl und Knöpfe in eine zweite Zeile, der Name bleibt lesbar */
+.custom-modal-box:not(.cl-compact) .list-item { flex-wrap: wrap; }
+.custom-modal-box:not(.cl-compact) .item-text { flex: 1 1 130px !important; }   /* der Name hat im Code ein festes flex:1 */
+.custom-modal-box:not(.cl-compact) .list-item .task-due { margin-left: auto; }
+.custom-modal-box #custom-entry-rating-input { flex: 0 0 auto; width: auto; }
+
+/* Check-Listen und Double-Check: kompakte Darstellung für das Handy (kleinere Schrift, kleinere Felder, mehr Platz für den Namen) */
+.cl-backdrop-compact { padding: 8px; }
+.cl-compact { width: 100% !important; padding: 0 12px !important; font-size: 0.85rem; max-height: 92vh !important; max-height: 92dvh !important; }
+.cl-compact h3 { font-size: 1.05rem; margin: 14px 0 4px; }   /* kein Innenrand oben/unten, damit die Spaltenköpfe und die Eingabeleiste bündig am Rand kleben */
+.cl-compact .modal-actions { margin-bottom: 14px; }
+.cl-compact .list-toolbar { margin-top: 6px !important; }
+.cl-compact .list-toolbar label { font-size: 0.74rem !important; }
+.cl-compact .custom-sort-select { flex: 1; min-width: 0; padding: 6px 8px; font-size: 16px; }
+.cl-compact .section-note { font-size: 0.74rem; padding: 6px 10px; margin-top: 6px !important; }
+.cl-compact .cl-entry { margin-bottom: 4px; }
+.cl-compact .list-item { padding: 5px 8px; gap: 6px; margin-bottom: 0; border-radius: 10px; }
+.cl-compact .item-text { font-size: 0.85rem; line-height: 1.25; }
+.cl-compact .cl-checks { gap: 4px; }
+.cl-compact .cl-cbox { width: 28px; height: 28px; font-size: 0.95rem; border-width: 1.5px; border-radius: 6px; }
+.cl-compact .cl-check-head { padding: 4px 10px 2px; gap: 4px; font-size: 0.6rem; }
+.cl-compact .cl-check-head span { width: 28px; }
+.cl-compact .btn-icon { width: 26px; height: 26px; font-size: 0.8rem; flex-shrink: 0; }
+.cl-compact .cl-move { gap: 2px; flex-shrink: 0; }
+.cl-compact .cl-move .btn-icon { width: 24px; height: 17px; border-radius: 6px; font-size: 0.55rem; }
+.cl-compact [data-custom-edit-name] { min-width: 0; font-size: 16px; padding: 5px 8px !important; }
+.cl-compact .add-bar { padding: 6px 0 2px; gap: 6px; }
+.cl-compact .add-bar input:not([type="checkbox"]), .cl-compact .add-bar select { padding: 8px 10px; font-size: 16px; }
+.cl-compact .add-bar .btn-small { padding: 8px 14px; }
+.cl-compact .custom-share-row label { font-size: 0.85rem; }
+.cl-compact .custom-comment { padding: 8px 10px; font-size: 0.8rem; }
+.cl-compact .appt-form-group { margin-top: 10px !important; }
+
 /* Check-Liste und Double-Check */
 .cl-checks { display: inline-flex; gap: 8px; flex-shrink: 0; }
 .cl-cbox { width: 38px; height: 38px; border-radius: 8px; border: 2px solid var(--border); background: var(--input-bg); color: var(--text); font-size: 1.25rem; font-weight: 800; line-height: 1; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
