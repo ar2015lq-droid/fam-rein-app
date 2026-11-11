@@ -706,6 +706,7 @@ function addDish() {
 // Check-Liste: jeder Eintrag hat einen Haken ("checked"), den alle setzen dürfen, für die die Liste freigegeben ist (und der Besitzer).
 // Double-Check: zwei Felder. "JA" = ausgewählt (mit X): das darf jeder setzen, für den die Liste freigegeben ist (und der Besitzer),
 // das X gehört dem, der es gesetzt hat ("jaBy"), wird in dessen Farbe gezeigt und kann nur von ihm wieder entfernt werden.
+// Der Besitzer der Liste kann jedes X entfernen (auch die der anderen), Freigegebene nur ihr eigenes.
 // "OK" = erledigt (mit Haken): das setzt und entfernt nur der Besitzer der Liste.
 // Bei Check-Listen gibt es keine Bewertung (weder die Zahl 1 bis 10 noch + ○ −).
 const CUSTOM_LIST_TYPES = {
@@ -745,14 +746,20 @@ function jaSetter(list, entry) {
   return entry.ja ? (entry.jaBy || list.owner) : null;
 }
 
-// Kann ich das X dieses Eintrags entfernen? Nur das eigene; das X von jemandem, der nicht mehr freigegeben ist, kann der Besitzer entfernen.
+// Kann ich das X dieses Eintrags entfernen? Das eigene immer; der Besitzer der Liste jedes.
 function canReleaseJa(list, by, name) {
-  return voteSameName(by, name) || (!customListMember(list, by) && voteSameName(list.owner, name));
+  return voteSameName(by, name) || voteSameName(list.owner, name);
+}
+
+function jaBlockedMessage(list, by) {
+  return voteSameName(by, list.owner)
+    ? `Das X hat ${by} gesetzt – nur ${by} kann es entfernen.`
+    : `Das X hat ${by} gesetzt – nur ${by} und der Besitzer können es entfernen.`;
 }
 
 // Haken setzen oder entfernen (field: "checked" bei Check-Listen, "ja" oder "ok" bei Double-Check).
-// JA: jeder Freigegebene setzt sein eigenes X; ein fremdes X wird nie überschrieben oder entfernt (auch nicht bei gleichzeitigem Antippen:
-// das Prüfen und Setzen passiert in einem Schritt). OK: nur der Besitzer.
+// JA: jeder Freigegebene setzt sein eigenes X; ein fremdes X wird nie überschrieben (auch nicht bei gleichzeitigem Antippen: das Prüfen
+// und Setzen passiert in einem Schritt) und kann nur vom Besitzer der Liste entfernt werden. OK: nur der Besitzer.
 async function setCustomCheck(list, entryId, field, value) {
   const type = customListType(list);
   if (!(CHECK_FIELDS[type] || []).includes(field)) return false;
@@ -776,7 +783,7 @@ async function setCustomCheck(list, entryId, field, value) {
           else blockedBy = by;                                     // fremdes X bleibt
         }
       });
-      if (blockedBy) { toast(`Das X hat ${blockedBy} gesetzt – nur ${blockedBy} kann es ändern.`); return false; }
+      if (blockedBy) { toast(jaBlockedMessage(list, blockedBy)); return false; }
       return true;
     }
     await ref.update({ [field]: !!value });
@@ -784,6 +791,30 @@ async function setCustomCheck(list, entryId, field, value) {
   } catch (err) {
     console.error('Haken nicht gespeichert', err);
     toast('Der Haken konnte nicht gespeichert werden.');
+    return false;
+  }
+}
+
+// Alle X der Liste entfernen, auch die der anderen (nur der Besitzer, mit Rückfrage). Das OK bleibt unverändert.
+async function clearAllJa(list) {
+  if (customListType(list) !== 'double' || !voteSameName(list.owner, currentUser.name)) return false;
+  if (!activeCustomEntries.some((e) => e.ja)) { toast('Es ist kein X gesetzt.'); return false; }
+  const n0 = activeCustomEntries.filter((e) => e.ja).length;
+  const ok = await confirmModal('Alle X entfernen?', `${n0 === 1 ? 'Das X' : `Alle ${n0} X`} in dieser Liste ${n0 === 1 ? 'wird' : 'werden'} entfernt, auch die der anderen. Das OK bleibt unverändert.`, 'Entfernen');
+  if (activeCustomListId === list.id) renderCustomModalBody(list);   // Fenster der Liste wieder anzeigen (auch bei "Abbrechen")
+  if (!ok) return false;
+  const withX = activeCustomEntries.filter((e) => e.ja);          // aktueller Stand nach der Rückfrage
+  if (!withX.length) return false;
+  try {
+    const batch = db.batch();
+    const col = db.collection('customLists').doc(list.id).collection('entries');
+    withX.forEach((e) => batch.update(col.doc(e.id), { ja: false, jaBy: null }));
+    await batch.commit();
+    toast(withX.length === 1 ? 'Ein X entfernt.' : `${withX.length} X entfernt.`);
+    return true;
+  } catch (err) {
+    console.error('X entfernen fehlgeschlagen', err);
+    toast('Die X konnten nicht entfernt werden.');
     return false;
   }
 }
@@ -1329,7 +1360,7 @@ function renderCustomModalBody(list) {
     checkInfoHtml = kind === 'check'
       ? `${activeCustomEntries.filter((e) => e.checked).length} von ${total} abgehakt`
       : `JA: ${activeCustomEntries.filter((e) => e.ja).length} · OK: ${activeCustomEntries.filter((e) => e.ok).length} (von ${total}). JA = ausgewählt (jeder setzt sein eigenes X), OK = erledigt (setzt der Besitzer).`;
-    checkInfoHtml = `<div class="section-note" style="margin-top:10px;">${checkInfoHtml}</div>`;
+    checkInfoHtml = `<div class="section-note" style="margin-top:10px;">${checkInfoHtml}</div>${(isOwner && kind === 'double' && activeCustomEntries.some((e) => e.ja)) ? '<div class="cl-bulk"><button class="btn btn-secondary btn-small" id="custom-clear-ja-btn">Alle X entfernen</button></div>' : ''}`;
   }
 
   // Ansicht des Besitzers: Bewertung nur von einer Person zeigen, Einträge mit +, ○ oder − zuerst
@@ -1376,7 +1407,7 @@ function renderCustomModalBody(list) {
             <input type="checkbox" data-share-user="${escapeHtml(u.name)}" ${checked ? 'checked' : ''}>
           </div>`;
       }).join('')}
-      ${checkList ? `<div class="section-note" style="margin-top:8px;">${kind === 'double' ? 'Freigegebene können bei JA ihr eigenes X setzen (das X eines anderen ändert niemand). Das OK setzt nur du.' : 'Wer die Liste sieht, kann Haken setzen und entfernen.'}</div>` : `
+      ${checkList ? `<div class="section-note" style="margin-top:8px;">${kind === 'double' ? 'Freigegebene können bei JA ihr eigenes X setzen und wieder entfernen, das X eines anderen können sie nicht ändern. Du kannst jedes X entfernen. Das OK setzt nur du.' : 'Wer die Liste sieht, kann Haken setzen und entfernen.'}</div>` : `
       <div class="custom-share-row" style="margin-top:8px;border-top:1px solid var(--border);padding-top:10px;">
         <label for="custom-voting-toggle">Freigegebene dürfen die Einträge bewerten (+ ○ −)</label>
         <input type="checkbox" id="custom-voting-toggle" ${list.voting ? 'checked' : ''}>
@@ -1495,14 +1526,18 @@ function renderCustomModalBody(list) {
       const field = btn.dataset.checkField;
       if (kind === 'double' && field === 'ja') {
         const by = jaSetter(list, entry);
-        if (by && !canReleaseJa(list, by, currentUser.name)) { toast(`Das X hat ${by} gesetzt – nur ${by} kann es ändern.`); return; }
-        setCustomCheck(list, entry.id, 'ja', !by);       // frei: mein X setzen, mein eigenes X: entfernen
+        if (by && !canReleaseJa(list, by, currentUser.name)) { toast(jaBlockedMessage(list, by)); return; }
+        // frei: mein X setzen; mein eigenes X (oder als Besitzer jedes X): entfernen
+        setCustomCheck(list, entry.id, 'ja', !by).then((done) => { if (done && by && !voteSameName(by, currentUser.name)) toast(`X von ${by} entfernt.`); });
         return;
       }
       if (kind === 'double' && field === 'ok' && !isOwner) { toast('Das OK kann nur der Besitzer der Liste setzen.'); return; }
       setCustomCheck(list, entry.id, field, !entry[field]);
     });
   });
+
+  const clearJaBtn = document.getElementById('custom-clear-ja-btn');
+  if (clearJaBtn) clearJaBtn.addEventListener('click', () => clearAllJa(list));
 
   // Bewerten: Knopf antippen setzt die eigene Bewertung, dieselbe noch einmal nimmt sie zurück
   document.querySelectorAll('[data-vote-entry]').forEach((btn) => {
@@ -1556,6 +1591,7 @@ function saveCustomEntryEdit(list, entryId) {
 
 async function deleteCustomEntry(list, entryId) {
   const ok = await confirmModal('Eintrag löschen?', 'Dieser Eintrag wird endgültig entfernt.');
+  if (activeCustomListId === list.id) renderCustomModalBody(list);   // Fenster der Liste wieder anzeigen (auch bei "Abbrechen")
   if (ok) db.collection('customLists').doc(list.id).collection('entries').doc(entryId).delete();
 }
 
@@ -1585,6 +1621,7 @@ function addCustomComment(list) {
 
 async function deleteCustomComment(list, commentId) {
   const ok = await confirmModal('Kommentar löschen?', 'Dieser Kommentar wird endgültig entfernt.');
+  if (activeCustomListId === list.id) renderCustomModalBody(list);   // Fenster der Liste wieder anzeigen (auch bei "Abbrechen")
   if (ok) db.collection('customLists').doc(list.id).collection('comments').doc(commentId).delete();
 }
 // <CUSTOM-END>
