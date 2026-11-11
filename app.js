@@ -7,7 +7,7 @@
 const ADMIN_NAME = 'Alex';
 const DAILY_MENUS = ['kalender', 'tasks', 'chat'];   // Bereiche, die für den Tages-Bonus besucht werden müssen (zusätzlich: eine Chat-Nachricht)
 const MENU_LABELS = { kalender: 'Kalender', tasks: 'Aufgaben', chat: 'Chat' };
-const DEFAULT_ORDER = ['bonus', 'konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine', 'spiele', 'letzterSieg'];
+const DEFAULT_ORDER = ['bonus', 'konto', 'essen', 'wichtig', 'krankHeute', 'krankStatistik', 'termine', 'aufgaben', 'spiele', 'letzterSieg'];
 const DEFAULT_PALETTE = ['#74AFC6', '#86B96C', '#DA8578', '#A692C4', '#E3A857', '#5FA8A0'];
 
 // ---------- Firebase init ----------
@@ -102,6 +102,7 @@ function subscribeUsers() {
       applyUserTheme();
       renderShopping();
       renderTasks();
+      renderHomeAufgaben();
       renderHomeSickToday();
       renderHomeSickStats();
       if (isAdmin(currentUser.name)) renderAdminSickCalendars();
@@ -537,6 +538,7 @@ function subscribeTasks() {
   return db.collection('tasks').orderBy('createdAt', 'asc').onSnapshot((snap) => {
     lastTaskDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderTasks();
+    renderHomeAufgaben();
     if (currentScreen === 'tasks') {
       markTasksSeen();
     } else {
@@ -594,6 +596,32 @@ function renderTasks() {
     });
   });
 }
+
+// Karte "Aufgaben heute" auf der Startseite: Aufgaben, die heute fällig und noch nicht erledigt sind (die eigenen zuerst)
+let homeTasksDay = '';
+
+function renderHomeAufgaben() {
+  const card = document.getElementById('home-card-aufgaben');
+  if (!card || !currentUser) return;
+  const today = todayStr();
+  homeTasksDay = today;
+  const me = currentUser.name.toLowerCase();
+  const open = lastTaskDocs.filter((t) => t.dueDate === today && !t.done);
+  if (!open.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const isMine = (t) => (t.assignedTo || '').toLowerCase() === me;
+  open.sort((a, b) => (isMine(b) ? 1 : 0) - (isMine(a) ? 1 : 0) || (a.assignedTo || '').localeCompare(b.assignedTo || ''));
+  document.getElementById('home-aufgaben-content').innerHTML = open.map((t) => {
+    const u = usersMap[(t.assignedTo || '').toLowerCase()];
+    const color = (u && userColor(u, 'color')) || 'var(--text-muted)';
+    return `<div class="aufgaben-row ${isMine(t) ? 'mine' : ''}"><span class="aufgaben-dot" style="background:${color}"></span><span class="aufgaben-text">${escapeHtml(t.text)}</span><span class="aufgaben-who" style="color:${color}">${escapeHtml(t.assignedTo || '–')}</span></div>`;
+  }).join('');
+}
+
+// Über Mitternacht offen gelassen: beim Zurückkehren neu zeichnen, damit die Karte zum neuen Tag passt
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && currentUser && homeTasksDay && homeTasksDay !== todayStr()) renderHomeAufgaben();
+});
 
 document.getElementById('task-add-btn').addEventListener('click', addTask);
 document.getElementById('task-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addTask(); });
@@ -7775,7 +7803,7 @@ function subscribeHomeOrder() {
   });
 }
 
-const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute', spiele: '🎮 Spiele-Hinweise', letzterSieg: '🏆 Letzter Sieg' };
+const ORDER_LABELS = { bonus: '⭐ 50-Cent-Bonus', konto: '💰 Kontostand', essen: '🍽️ Essen', wichtig: '📌 Wichtig', krankHeute: '🤒 Krank heute', krankStatistik: '📊 Krank-Statistik', termine: '📅 Termine heute', aufgaben: '✅ Aufgaben heute', spiele: '🎮 Spiele-Hinweise', letzterSieg: '🏆 Letzter Sieg' };
 
 function renderAdminOrderList() {
   const el = document.getElementById('admin-order-list');

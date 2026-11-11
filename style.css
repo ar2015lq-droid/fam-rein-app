@@ -260,6 +260,13 @@ a { color: inherit; }
 .termine-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 0.9rem; }
 .termine-row .termine-time { font-weight: 700; min-width: 44px; }
 .termine-row .termine-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.aufgaben-card { --stripe: var(--accent-green); }
+.aufgaben-card .label { font-weight: 600; margin-bottom: 10px; display: block; }
+.aufgaben-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 0.9rem; min-width: 0; }
+.aufgaben-row .aufgaben-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.aufgaben-row .aufgaben-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.aufgaben-row .aufgaben-who { font-size: 0.78rem; font-weight: 600; flex-shrink: 0; }
+.aufgaben-row.mine .aufgaben-text { font-weight: 700; }
 
 /* ---------- Großer Monatskalender (Termine) ---------- */
 .month-cal-wrap { overflow-x: auto; }

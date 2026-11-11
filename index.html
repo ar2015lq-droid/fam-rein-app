@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Familie">
-<link rel="stylesheet" href="style.css?v=36">
+<link rel="stylesheet" href="style.css?v=37">
 </head>
 <body>
 
@@ -75,6 +75,11 @@
         <div class="card termine-card" id="home-card-termine" data-order-key="termine" style="display:none;">
           <div class="label">📅 Termine heute</div>
           <div id="home-termine-content"></div>
+        </div>
+
+        <div class="card aufgaben-card" id="home-card-aufgaben" data-order-key="aufgaben" style="display:none;">
+          <div class="label">✅ Aufgaben heute</div>
+          <div id="home-aufgaben-content"></div>
         </div>
 
         <div class="card games-card" id="home-card-spiele" data-order-key="spiele" style="display:none;">
@@ -445,6 +450,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script src="firebase-config.js"></script>
-<script src="app.js?v=43"></script>
+<script src="app.js?v=44"></script>
 </body>
 </html>
