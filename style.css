@@ -1052,3 +1052,18 @@ textarea.important-input {
 .list-item.done .shop-by { opacity: 0.6; }
 .shop-move { flex-shrink: 0; gap: 2px; }
 .shop-move .btn-icon { width: 28px; height: 20px; border-radius: 7px; font-size: 0.6rem; }
+
+/* Gerichte: Zutaten beim Bearbeiten, Einkaufswagen in der Liste */
+.list-item.dish-edit { flex-direction: column; align-items: stretch; gap: 10px; }
+.dish-edit-top { display: flex; align-items: center; gap: 8px; }
+.dish-edit-top .dish-edit-input { min-width: 0; font-size: 16px; }
+.dish-ingr-title { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+.dish-ingr-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.dish-ingr-text { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 0.9rem; }
+.dish-ingr-row .btn-icon { width: 28px; height: 28px; font-size: 0.75rem; flex-shrink: 0; }
+.dish-ingr-empty { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px; }
+.dish-ingr-add { display: flex; gap: 8px; margin-top: 6px; }
+.dish-ingr-add input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); font-size: 16px; }
+#dishes-list .item-text { min-width: 0; overflow-wrap: anywhere; }   /* lange Namen brechen um, die Knöpfe bleiben in der Zeile */
+#dishes-list .list-item > .btn-icon { flex-shrink: 0; }
+.dish-cart { flex-shrink: 0; }

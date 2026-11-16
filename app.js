@@ -517,15 +517,16 @@ function renderShopping() {
   // ganz rechts die Pfeile zum Verschieben
   const items = shoppingOrder(lastShoppingDocs);
   el.innerHTML = items.map((item, idx) => {
-    const by = item.addedBy || 'Unbekannt';
-    const userData = usersMap[by.toLowerCase()];
+    const fromDish = typeof item.fromDish === 'string';
+    const by = fromDish ? 'Gericht' : (item.addedBy || 'Unbekannt');      // Zutaten aus einem Gericht: "(Gericht)" statt eines Nutzernamens
+    const userData = fromDish ? null : usersMap[by.toLowerCase()];
     const color = (userData && userColor(userData, 'color')) || 'var(--text-muted)';
     const arrows = items.length < 2 ? '' : `<span class="cl-move shop-move"><button class="btn-icon" data-shop-move="${item.id}" data-move-dir="-1" title="Nach oben" aria-label="Nach oben" ${idx === 0 ? 'disabled' : ''}>▲</button><button class="btn-icon" data-shop-move="${item.id}" data-move-dir="1" title="Nach unten" aria-label="Nach unten" ${idx === items.length - 1 ? 'disabled' : ''}>▼</button></span>`;
     return `
         <div class="list-item ${item.checked ? 'done' : ''}">
           <div class="item-check ${item.checked ? 'checked' : ''}" data-id="${item.id}" data-checked="${item.checked ? '1' : '0'}">${item.checked ? '✓' : ''}</div>
           <div class="item-text">${escapeHtml(item.text)}</div>
-          <span class="shop-by" style="color:${color}">(${escapeHtml(by)})</span>
+          <span class="shop-by" style="color:${color}"${fromDish ? ` title="${escapeHtml('Aus dem Gericht: ' + item.fromDish)}"` : ''}>(${escapeHtml(by)})</span>
           ${arrows}
         </div>`;
   }).join('');
@@ -685,6 +686,8 @@ function addTask() {
 
 let lastDishDocs = [];
 let dishEditingId = null;
+let dishDraft = null;      // Entwurf beim Bearbeiten { id, text, ingredients }; wird erst mit dem Haken gespeichert
+let dishFocus = null;      // nach dem Neuzeichnen: 'ingredient' = Eingabefeld für Zutaten wieder anwählen
 
 function subscribeDishes() {
   return db.collection('dishes').orderBy('text', 'asc').onSnapshot((snap) => {
@@ -693,52 +696,165 @@ function subscribeDishes() {
   });
 }
 
+function dishIngredients(d) {
+  return Array.isArray(d.ingredients) ? d.ingredients.map((x) => String(x).trim()).filter(Boolean) : [];
+}
+
 function renderDishes() {
   const el = document.getElementById('dishes-list');
+  // Wird das bearbeitete Gericht inzwischen gelöscht, ist die Bearbeitung beendet
+  if (dishEditingId && !lastDishDocs.some((d) => d.id === dishEditingId)) { dishEditingId = null; dishDraft = null; }
+  // Halb getippten Text und den Fokus über das Neuzeichnen retten (z.B. wenn jemand anderes ein Gericht anlegt)
+  const act = document.activeElement;
+  const keepIngr = document.getElementById('dish-ingr-input');
+  const keep = { ingr: keepIngr ? keepIngr.value : '', focus: act && el.contains(act) ? act.id : '', caret: act && act.id === 'dish-edit-name' ? act.selectionStart : null };
   if (!lastDishDocs.length) {
     el.innerHTML = `<div class="empty-state"><span class="emoji">🍽️</span>Noch keine Gerichte eingetragen.</div>`;
     return;
   }
   el.innerHTML = lastDishDocs.map((d) => {
-    if (d.id === dishEditingId) {
+    if (d.id === dishEditingId && dishDraft) {
       return `
-        <div class="list-item">
-          <input type="text" class="dish-edit-input" data-edit-input="${d.id}" value="${escapeHtml(d.text)}" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
-          <button class="btn-icon" data-save-dish="${d.id}" title="Speichern">✓</button>
-          <button class="btn-icon" data-cancel-dish="1" title="Abbrechen">✕</button>
+        <div class="list-item dish-edit">
+          <div class="dish-edit-top">
+            <input type="text" class="dish-edit-input" id="dish-edit-name" data-edit-input="${d.id}" value="${escapeHtml(dishDraft.text)}" aria-label="Name des Gerichts" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);">
+            <button class="btn-icon" data-save-dish="${d.id}" title="Speichern">✓</button>
+            <button class="btn-icon" data-cancel-dish="1" title="Abbrechen">✕</button>
+          </div>
+          <div class="dish-ingr">
+            <div class="dish-ingr-title">Zutaten</div>
+            ${dishDraft.ingredients.length
+              ? `<div class="dish-ingr-list">${dishDraft.ingredients.map((z, i) => `<div class="dish-ingr-row"><span class="dish-ingr-text">${escapeHtml(z)}</span><button class="btn-icon" data-ingr-del="${i}" title="Zutat entfernen" aria-label="${escapeHtml(z)} entfernen">✕</button></div>`).join('')}</div>`
+              : '<div class="dish-ingr-empty">Noch keine Zutaten.</div>'}
+            <div class="dish-ingr-add">
+              <input type="text" id="dish-ingr-input" placeholder="Zutat hinzufügen..." aria-label="Neue Zutat">
+              <button class="btn btn-primary btn-small" id="dish-ingr-add-btn" aria-label="Zutat hinzufügen">+</button>
+            </div>
+          </div>
         </div>`;
     }
+    const ing = dishIngredients(d);
+    const cartTitle = `${ing.length} ${ing.length === 1 ? 'Zutat' : 'Zutaten'} auf die Einkaufsliste setzen`;
     return `
       <div class="list-item">
         <div class="item-text" style="flex:1;">${escapeHtml(d.text)}</div>
+        ${ing.length ? `<button class="btn-icon dish-cart" data-cart-dish="${d.id}" title="${cartTitle}" aria-label="${cartTitle}">🛒</button>` : ''}
         <button class="btn-icon" data-edit-dish="${d.id}" title="Bearbeiten">✏️</button>
         ${isAdmin(currentUser.name) ? `<button class="btn-icon" data-delete-dish="${d.id}" title="Löschen">🗑️</button>` : ''}
       </div>`;
   }).join('');
 
   el.querySelectorAll('[data-edit-dish]').forEach((btn) => {
-    btn.addEventListener('click', () => { dishEditingId = btn.dataset.editDish; renderDishes(); });
+    btn.addEventListener('click', () => {
+      const d = lastDishDocs.find((x) => x.id === btn.dataset.editDish);
+      if (!d) return;
+      dishEditingId = d.id;
+      dishDraft = { id: d.id, text: d.text, ingredients: dishIngredients(d) };
+      renderDishes();
+    });
   });
   el.querySelectorAll('[data-cancel-dish]').forEach((btn) => {
-    btn.addEventListener('click', () => { dishEditingId = null; renderDishes(); });
+    btn.addEventListener('click', () => { dishEditingId = null; dishDraft = null; renderDishes(); });
   });
   el.querySelectorAll('[data-save-dish]').forEach((btn) => {
     btn.addEventListener('click', () => saveDishEdit(btn.dataset.saveDish));
   });
   el.querySelectorAll('[data-edit-input]').forEach((input) => {
+    input.addEventListener('input', () => { if (dishDraft) dishDraft.text = input.value; });
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveDishEdit(input.dataset.editInput); });
+  });
+  const ingrInput = document.getElementById('dish-ingr-input');
+  if (ingrInput) ingrInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addDishIngredient(); });
+  const ingrBtn = document.getElementById('dish-ingr-add-btn');
+  if (ingrBtn) ingrBtn.addEventListener('click', addDishIngredient);
+  el.querySelectorAll('[data-ingr-del]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!dishDraft) return;
+      dishDraft.ingredients.splice(parseInt(btn.dataset.ingrDel, 10), 1);
+      renderDishes();
+    });
   });
   el.querySelectorAll('[data-delete-dish]').forEach((btn) => {
     btn.addEventListener('click', () => deleteDish(btn.dataset.deleteDish));
   });
+  el.querySelectorAll('[data-cart-dish]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const d = lastDishDocs.find((x) => x.id === btn.dataset.cartDish);
+      if (d) addDishToShopping(d);
+    });
+  });
+
+  if (ingrInput && keep.ingr) ingrInput.value = keep.ingr;
+  if (dishFocus === 'ingredient' && ingrInput) { ingrInput.focus(); dishFocus = null; }
+  else if (keep.focus) {
+    const f = document.getElementById(keep.focus);
+    if (f) { f.focus(); if (keep.caret !== null && f.setSelectionRange) f.setSelectionRange(keep.caret, keep.caret); }
+  }
+}
+
+// Zutat zum Entwurf hinzufügen (wird mit dem Haken beim Gericht gespeichert)
+function addDishIngredient() {
+  if (!dishDraft) return;
+  const input = document.getElementById('dish-ingr-input');
+  const text = (input ? input.value : '').trim();
+  if (!text) return;
+  if (dishDraft.ingredients.some((z) => z.toLowerCase() === text.toLowerCase())) { toast('Diese Zutat steht schon in der Liste.'); return; }
+  dishDraft.ingredients.push(text);
+  input.value = '';
+  dishFocus = 'ingredient';
+  renderDishes();
 }
 
 function saveDishEdit(id) {
-  const input = document.querySelector(`[data-edit-input="${CSS.escape(id)}"]`);
-  const text = input.value.trim();
-  if (!text) return;
-  db.collection('dishes').doc(id).update({ text });
+  if (!dishDraft || dishDraft.id !== id) return;
+  const text = dishDraft.text.trim();
+  if (!text) { toast('Das Gericht braucht einen Namen.'); return; }
+  const ingredients = dishDraft.ingredients.slice();
+  // Eine getippte, aber noch nicht mit "+" hinzugefügte Zutat nicht verlieren
+  const pending = document.getElementById('dish-ingr-input');
+  const extra = pending ? pending.value.trim() : '';
+  if (extra && !ingredients.some((z) => z.toLowerCase() === extra.toLowerCase())) ingredients.push(extra);
+  db.collection('dishes').doc(id).update({ text, ingredients });
   dishEditingId = null;
+  dishDraft = null;
+  renderDishes();
+}
+
+// Zutaten eines Gerichts auf die Einkaufsliste setzen. Dort steht als Name "Gericht" statt eines Nutzers.
+// Was schon (ungekauft) auf der Liste steht, wird nicht doppelt eingetragen. Die neuen Einträge stehen unten, in der Reihenfolge der Zutaten.
+async function addDishToShopping(dish) {
+  const ingredients = dishIngredients(dish);
+  if (!ingredients.length) return false;
+  const present = new Set(lastShoppingDocs.filter((i) => !i.checked).map((i) => String(i.text).trim().toLowerCase()));
+  const toAdd = [];
+  ingredients.forEach((z) => {
+    const k = z.toLowerCase();
+    if (present.has(k)) return;
+    present.add(k);
+    toAdd.push(z);
+  });
+  const skipped = ingredients.length - toAdd.length;
+  if (!toAdd.length) { toast('Alle Zutaten stehen schon auf der Einkaufsliste.'); return false; }
+  try {
+    const batch = db.batch();
+    const col = db.collection('shopping');
+    const ordered = shoppingOrder(lastShoppingDocs);
+    let next = 0;
+    if (ordered.length) {
+      if (ordered.every((i) => Number.isFinite(i.order))) next = Math.max(...ordered.map((i) => i.order)) + 1;
+      else { ordered.forEach((x, k) => { if (x.order !== k) batch.update(col.doc(x.id), { order: k }); }); next = ordered.length; }
+    }
+    toAdd.forEach((z, k) => {
+      batch.set(col.doc(), { text: z, addedBy: currentUser.name, fromDish: dish.text, checked: false, order: next + k, createdAt: FieldValue.serverTimestamp() });
+    });
+    await batch.commit();
+    toast(`${toAdd.length} ${toAdd.length === 1 ? 'Zutat' : 'Zutaten'} für „${dish.text}“ zur Einkaufsliste hinzugefügt${skipped ? ` (${skipped} ${skipped === 1 ? 'stand' : 'standen'} schon drauf)` : ''}.`);
+    return true;
+  } catch (err) {
+    console.error('Zutaten nicht hinzugefügt', err);
+    toast('Die Zutaten konnten nicht hinzugefügt werden.');
+    return false;
+  }
 }
 
 async function deleteDish(id) {
@@ -753,7 +869,7 @@ function addDish() {
   const input = document.getElementById('dish-input');
   const text = input.value.trim();
   if (!text) return;
-  db.collection('dishes').add({ text, createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp() });
+  db.collection('dishes').add({ text, ingredients: [], createdBy: currentUser.name, createdAt: FieldValue.serverTimestamp() });
   input.value = '';
 }
 
