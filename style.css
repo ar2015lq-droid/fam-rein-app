@@ -1044,3 +1044,11 @@ textarea.important-input {
 @media (min-width: 560px) {
   #bottom-nav { border-radius: 0 0 var(--radius-l) var(--radius-l); }
 }
+
+/* Einkaufsliste: Name in Klammern rechts im Eintrag, Pfeile zum Verschieben ganz rechts */
+#shopping-list .list-item { gap: 10px; }
+#shopping-list .item-text { min-width: 0; overflow-wrap: anywhere; }
+.shop-by { flex-shrink: 0; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+.list-item.done .shop-by { opacity: 0.6; }
+.shop-move { flex-shrink: 0; gap: 2px; }
+.shop-move .btn-icon { width: 28px; height: 20px; border-radius: 7px; font-size: 0.6rem; }

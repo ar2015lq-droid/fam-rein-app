@@ -472,37 +472,72 @@ function subscribeShopping() {
   });
 }
 
+// Reihenfolge der Einkaufsliste (für alle gleich): erst Einträge mit gespeicherter Position ("order"),
+// danach die ohne (in der Reihenfolge des Anlegens). Bei gleicher Position entscheidet das Anlegen.
+function shoppingOrder(items) {
+  return items.slice().sort((a, b) => {
+    const ao = Number.isFinite(a.order);
+    const bo = Number.isFinite(b.order);
+    if (ao && bo && a.order !== b.order) return a.order - b.order;
+    if (ao !== bo) return ao ? -1 : 1;
+    const ca = entryCreatedMs(a);
+    const cb = entryCreatedMs(b);
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return String(a.text).localeCompare(String(b.text));
+  });
+}
+
+// Einen Eintrag um eine Stelle verschieben (dir = -1 nach oben, 1 nach unten). Das darf jeder, die Reihenfolge gilt für alle.
+// Beim ersten Verschieben bekommen alle Einträge feste Positionen.
+async function moveShoppingItem(id, dir) {
+  const ordered = shoppingOrder(lastShoppingDocs);
+  const i = ordered.findIndex((x) => x.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= ordered.length) return false;
+  [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
+  try {
+    const batch = db.batch();
+    ordered.forEach((x, k) => { if (x.order !== k) batch.update(db.collection('shopping').doc(x.id), { order: k }); });
+    await batch.commit();
+    return true;
+  } catch (err) {
+    console.error('Einkaufsliste: Verschieben fehlgeschlagen', err);
+    toast('Der Eintrag konnte nicht verschoben werden.');
+    return false;
+  }
+}
+
 function renderShopping() {
   const el = document.getElementById('shopping-list');
   if (!lastShoppingDocs.length) {
     el.innerHTML = `<div class="empty-state"><span class="emoji">🛒</span>Die Einkaufsliste ist leer.</div>`;
     return;
   }
-  const groups = {};
-  lastShoppingDocs.forEach((item) => {
-    const key = item.addedBy || 'Unbekannt';
-    (groups[key] = groups[key] || []).push(item);
-  });
-  let html = '';
-  Object.keys(groups).forEach((user) => {
-    const userData = usersMap[user.toLowerCase()];
-    const color = userData ? userColor(userData, 'color') : null;
-    html += `<div class="list-group-title" style="${color ? `color:${color}` : ''}">${escapeHtml(user)}</div>`;
-    groups[user].forEach((item) => {
-      html += `
+  // Eine durchgehende Liste in der gemeinsamen Reihenfolge; wer den Eintrag angelegt hat, steht in Klammern rechts im Eintrag,
+  // ganz rechts die Pfeile zum Verschieben
+  const items = shoppingOrder(lastShoppingDocs);
+  el.innerHTML = items.map((item, idx) => {
+    const by = item.addedBy || 'Unbekannt';
+    const userData = usersMap[by.toLowerCase()];
+    const color = (userData && userColor(userData, 'color')) || 'var(--text-muted)';
+    const arrows = items.length < 2 ? '' : `<span class="cl-move shop-move"><button class="btn-icon" data-shop-move="${item.id}" data-move-dir="-1" title="Nach oben" aria-label="Nach oben" ${idx === 0 ? 'disabled' : ''}>▲</button><button class="btn-icon" data-shop-move="${item.id}" data-move-dir="1" title="Nach unten" aria-label="Nach unten" ${idx === items.length - 1 ? 'disabled' : ''}>▼</button></span>`;
+    return `
         <div class="list-item ${item.checked ? 'done' : ''}">
           <div class="item-check ${item.checked ? 'checked' : ''}" data-id="${item.id}" data-checked="${item.checked ? '1' : '0'}">${item.checked ? '✓' : ''}</div>
           <div class="item-text">${escapeHtml(item.text)}</div>
+          <span class="shop-by" style="color:${color}">(${escapeHtml(by)})</span>
+          ${arrows}
         </div>`;
-    });
-  });
-  el.innerHTML = html;
+  }).join('');
   el.querySelectorAll('.item-check').forEach((chk) => {
     chk.addEventListener('click', () => {
       const id = chk.dataset.id;
       const newVal = chk.dataset.checked !== '1';
       db.collection('shopping').doc(id).update({ checked: newVal });
     });
+  });
+  el.querySelectorAll('[data-shop-move]').forEach((btn) => {
+    btn.addEventListener('click', () => moveShoppingItem(btn.dataset.shopMove, parseInt(btn.dataset.moveDir, 10)));
   });
 }
 
@@ -513,7 +548,10 @@ function addShoppingItem() {
   const input = document.getElementById('shopping-input');
   const text = input.value.trim();
   if (!text) return;
-  db.collection('shopping').add({ text, addedBy: currentUser.name, checked: false, createdAt: FieldValue.serverTimestamp() });
+  const entry = { text, addedBy: currentUser.name, checked: false, createdAt: FieldValue.serverTimestamp() };
+  const orders = lastShoppingDocs.filter((i) => Number.isFinite(i.order)).map((i) => i.order);
+  if (orders.length) entry.order = Math.max(...orders) + 1;   // neuer Eintrag steht ganz unten
+  db.collection('shopping').add(entry);
   input.value = '';
 }
 
